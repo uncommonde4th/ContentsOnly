@@ -3,12 +3,13 @@ import os
 import logging
 from pathlib import Path
 
-# Добавляем путь к src в PYTHONPATH для импортов
-src_path = Path(__file__).parent
-sys.path.insert(0, str(src_path))
+# Добавляем src в Python path
+current_dir = Path(__file__).parent
+project_root = current_dir.parent
+sys.path.insert(0, str(project_root))
 
-from gui.main_window import MainWindow
-from utils.config import ProcessingConfig
+from src.gui.main_window import MainWindow
+from src.utils.config import ProcessingConfig
 import tkinter as tk
 from tkinter import messagebox
 
@@ -45,9 +46,6 @@ class DocumentScannerApp:
             self.root.title("Document Scanner - Автоматическая обрезка документов")
             self.root.geometry("800x600")
             
-            # Устанавливаем иконку
-            self.set_icon()
-            
             # Создаем главное окно
             app_window = MainWindow(self.root, self.config)
             
@@ -60,27 +58,6 @@ class DocumentScannerApp:
         except Exception as e:
             self.logger.error(f"Ошибка при запуске приложения: {str(e)}")
             messagebox.showerror("Ошибка", f"Не удалось запустить приложение: {str(e)}")
-    
-    def set_icon(self):
-        """Установка иконки приложения"""
-        try:
-            # Попробуем найти иконку в нескольких местах
-            icon_paths = [
-                Path(__file__).parent.parent / "resources" / "app.ico",
-                Path(__file__).parent / "resources" / "app.ico",
-                Path(sys.executable).parent / "resources" / "app.ico"
-            ]
-            
-            for icon_path in icon_paths:
-                if icon_path.exists():
-                    self.root.iconbitmap(str(icon_path))
-                    self.logger.info(f"Иконка установлена: {icon_path}")
-                    break
-            else:
-                self.logger.warning("Иконка приложения не найдена")
-                
-        except Exception as e:
-            self.logger.warning(f"Не удалось установить иконку: {str(e)}")
     
     def on_closing(self):
         """Обработчик закрытия приложения"""

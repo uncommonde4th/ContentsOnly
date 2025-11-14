@@ -3,6 +3,16 @@ from tkinter import ttk, filedialog, messagebox
 import threading
 from pathlib import Path
 import logging
+import sys
+import os
+
+# Добавляем src в путь для импортов
+current_dir = os.path.dirname(os.path.abspath(__file__))
+src_path = os.path.join(current_dir, '..')
+sys.path.insert(0, src_path)
+
+from src.scanner.image_processor import ImageProcessor
+from src.utils.config import ProcessingConfig
 
 class MainWindow:
     def __init__(self, root, config):
@@ -129,9 +139,6 @@ class MainWindow:
             self.set_processing_state(False)
             self.progress.start()
             self.status_var.set("Обработка...")
-            
-            # Импортируем здесь чтобы избежать циклических импортов
-            from scanner.image_processor import ImageProcessor
             
             processor = ImageProcessor(self.config)
             stats = processor.process_folder(

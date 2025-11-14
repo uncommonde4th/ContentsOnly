@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 from typing import Optional, Tuple, List
-from ..utils.config import ProcessingConfig
+from src.utils.config import ProcessingConfig
 
 class DocumentDetector:
     """Класс для автоматического обнаружения документов на изображениях"""

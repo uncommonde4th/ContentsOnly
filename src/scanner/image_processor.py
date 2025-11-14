@@ -1,10 +1,11 @@
 import cv2
 import os
+import numpy as np
 from pathlib import Path
 from typing import List, Optional
-from .document_detector import DocumentDetector
-from .perspective_transform import PerspectiveTransformer
-from ..utils.config import ProcessingConfig
+from src.scanner.document_detector import DocumentDetector
+from src.scanner.perspective_transform import PerspectiveTransformer
+from src.utils.config import ProcessingConfig
 
 class ImageProcessor:
     """Основной класс для обработки изображений"""
