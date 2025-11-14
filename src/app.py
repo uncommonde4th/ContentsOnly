@@ -196,6 +196,11 @@ class DocumentScannerApp:
         if self.current_calibration_image is None:
             return
         
+        # Убеждаемся что размеры для преобразования координат инициализированы
+        if not hasattr(self, 'display_scale_x') or not hasattr(self, 'display_scale_y'):
+            # Если еще не инициализированы, обновляем отображение
+            self.display_calibration_image(self.current_calibration_image)
+        
         # Преобразуем координаты canvas в координаты изображения
         x_img = int((event.x - self.display_offset_x) * self.display_scale_x)
         y_img = int((event.y - self.display_offset_y) * self.display_scale_y)
@@ -204,10 +209,15 @@ class DocumentScannerApp:
         if (0 <= x_img < self.current_calibration_image.shape[1] and 
             0 <= y_img < self.current_calibration_image.shape[0]):
             
+            points_before = len(self.calibration_manager.current_points)
             self.calibration_manager.add_point(x_img, y_img)
+            points_after = len(self.calibration_manager.current_points)
+            
+            # Обновляем отображение
             self.display_calibration_image(self.current_calibration_image)
             
-            if len(self.calibration_manager.current_points) == 4:
+            # Показываем сообщение только если добавили 4-ю точку (было 3, стало 4)
+            if points_before == 3 and points_after == 4:
                 messagebox.showinfo("Успех", "4 точки отмечены! Сохраните калибровку или перейдите к следующему изображению.")
     
     def remove_last_point(self):

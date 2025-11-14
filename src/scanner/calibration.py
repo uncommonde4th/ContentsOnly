@@ -18,6 +18,27 @@ class CalibrationConfig:
         self.area_range = (0, 0)  # Диапазон площадей
         self.aspect_ratio_range = (0, 0)  # Диапазон соотношений сторон
         
+        # Расширенная информация для лучшего распознавания
+        self.document_area_pixels = 0  # Площадь документа в пикселях
+        self.document_area_ratio = 0.0  # Площадь документа как доля изображения
+        self.document_width = 0  # Ширина документа в пикселях
+        self.document_height = 0  # Высота документа в пикселях
+        self.document_aspect_ratio = 0.0  # Соотношение сторон документа
+        
+        # Цветовая информация документа (более детальная)
+        self.document_color_mean = None  # Средний цвет
+        self.document_color_std = None  # Стандартное отклонение цвета
+        self.document_color_min = None  # Минимальный цвет
+        self.document_color_max = None  # Максимальный цвет
+        
+        # Цветовая информация фона (более детальная)
+        self.bg_color_mean = None  # Средний цвет фона
+        self.bg_color_std = None  # Стандартное отклонение цвета фона
+        self.bg_samples = []  # Образцы цвета фона из разных областей
+        
+        # Геометрическая информация
+        self.calibration_image_size = None  # Размер калибровочного изображения
+        
         self.calibrated = False
         self.calibration_samples = 0
     
@@ -25,30 +46,37 @@ class CalibrationConfig:
         """Анализирует калибровочное изображение и извлекает параметры"""
         h, w = image.shape[:2]
         
+        # Сохраняем размер калибровочного изображения
+        self.calibration_image_size = (w, h)
+        
         # Сохраняем точки в процентах
         self.crop_points = [(x / w, y / h) for x, y in points]
         
-        # Анализируем цвета
+        # Анализируем геометрию (сначала, чтобы получить размеры)
+        self._analyze_geometry(points, (w, h))
+        
+        # Анализируем цвета (с расширенной информацией)
         self._analyze_colors(image, points)
         
         # Анализируем края и контуры
         self._analyze_edges(image, points)
         
-        # Анализируем геометрию
-        self._analyze_geometry(points, (w, h))
-        
         self.calibration_samples += 1
         self.calibrated = True
         
         print(f"🔧 Анализ калибровки завершен:")
-        print(f"   - Цвет документа: {self.avg_color}")
-        print(f"   - Цвет фона: {self.avg_bg_color}")
+        print(f"   - Размер изображения: {w}x{h}")
+        print(f"   - Площадь документа: {self.document_area_pixels} пикселей ({self.document_area_ratio*100:.1f}%)")
+        print(f"   - Размер документа: {self.document_width}x{self.document_height}")
+        print(f"   - Соотношение сторон: {self.document_aspect_ratio:.2f}")
+        print(f"   - Цвет документа (средний): {self.avg_color}")
+        print(f"   - Цвет фона (средний): {self.avg_bg_color}")
         print(f"   - Порог цвета: {self.color_threshold}")
         print(f"   - Диапазон площади: {self.area_range}")
         print(f"   - Диапазон пропорций: {self.aspect_ratio_range}")
     
     def _analyze_colors(self, image: np.ndarray, points: List[Tuple[int, int]]):
-        """Анализирует цвета документа и фона с улучшенной обработкой"""
+        """Анализирует цвета документа и фона с улучшенной обработкой и расширенной информацией"""
         # Создаем маску документа
         mask = np.zeros(image.shape[:2], dtype=np.uint8)
         points_array = np.array(points, dtype=np.int32)
@@ -58,39 +86,104 @@ class CalibrationConfig:
         kernel = np.ones((5, 5), np.uint8)
         mask_inner = cv2.erode(mask, kernel, iterations=3)
         
-        # Средний цвет документа (используем внутреннюю область)
+        # Анализ цвета документа (расширенная информация)
         document_pixels = image[mask_inner == 255]
         if len(document_pixels) > 0:
             # Используем медиану вместо среднего для большей устойчивости к выбросам
             self.avg_color = np.median(document_pixels, axis=0).astype(np.float32)
+            # Сохраняем расширенную статистику
+            self.document_color_mean = np.mean(document_pixels, axis=0).astype(np.float32)
+            self.document_color_std = np.std(document_pixels, axis=0).astype(np.float32)
+            self.document_color_min = np.min(document_pixels, axis=0).astype(np.float32)
+            self.document_color_max = np.max(document_pixels, axis=0).astype(np.float32)
         else:
             # Fallback на полную маску
             document_pixels = image[mask == 255]
-            self.avg_color = np.median(document_pixels, axis=0).astype(np.float32) if len(document_pixels) > 0 else np.array([128, 128, 128], dtype=np.float32)
+            if len(document_pixels) > 0:
+                self.avg_color = np.median(document_pixels, axis=0).astype(np.float32)
+                self.document_color_mean = np.mean(document_pixels, axis=0).astype(np.float32)
+                self.document_color_std = np.std(document_pixels, axis=0).astype(np.float32)
+                self.document_color_min = np.min(document_pixels, axis=0).astype(np.float32)
+                self.document_color_max = np.max(document_pixels, axis=0).astype(np.float32)
+            else:
+                default_color = np.array([128, 128, 128], dtype=np.float32)
+                self.avg_color = default_color
+                self.document_color_mean = default_color
+                self.document_color_std = np.array([10, 10, 10], dtype=np.float32)
+                self.document_color_min = default_color
+                self.document_color_max = default_color
         
-        # Средний цвет фона (вокруг документа)
+        # Анализ цвета фона (расширенная информация)
+        h, w = image.shape[:2]
         bg_mask = cv2.bitwise_not(mask)
-        # Расширяем маску документа для создания буферной зоны
-        mask_expanded = cv2.dilate(mask, np.ones((30, 30), np.uint8), iterations=2)
-        bg_mask_clean = cv2.bitwise_and(bg_mask, mask_expanded)
         
-        # Берем только пиксели достаточно далеко от границы
-        kernel = np.ones((30, 30), np.uint8)
-        bg_mask_clean = cv2.erode(bg_mask_clean, kernel)
+        # Собираем образцы фона из разных областей ВОКРУГ документа
+        self.bg_samples = []
+        
+        # 1. Образцы из углов изображения (всегда фон)
+        corner_regions = [
+            image[0:min(100, h//3), 0:min(100, w//3)],  # Верхний левый
+            image[0:min(100, h//3), max(0, w-100):w],  # Верхний правый
+            image[max(0, h-100):h, 0:min(100, w//3)],  # Нижний левый
+            image[max(0, h-100):h, max(0, w-100):w],  # Нижний правый
+        ]
+        for region in corner_regions:
+            if region.size > 0:
+                region_flat = region.reshape(-1, 3)
+                if len(region_flat) > 0:
+                    self.bg_samples.append(np.median(region_flat, axis=0).astype(np.float32))
+        
+        # 2. Образцы из краев изображения (верх, низ, лево, право)
+        edge_regions = [
+            image[0:min(50, h//5), :],  # Верх
+            image[max(0, h-50):h, :],  # Низ
+            image[:, 0:min(50, w//5)],  # Лево
+            image[:, max(0, w-50):w],  # Право
+        ]
+        for region in edge_regions:
+            if region.size > 0:
+                region_flat = region.reshape(-1, 3)
+                if len(region_flat) > 0:
+                    self.bg_samples.append(np.median(region_flat, axis=0).astype(np.float32))
+        
+        # 3. Образцы из области вокруг документа (буферная зона)
+        # Расширяем маску документа для создания буферной зоны
+        mask_expanded = cv2.dilate(mask, np.ones((50, 50), np.uint8), iterations=3)
+        bg_mask_expanded = cv2.bitwise_and(bg_mask, mask_expanded)
+        
+        # Берем только пиксели достаточно далеко от границы документа
+        kernel = np.ones((40, 40), np.uint8)
+        bg_mask_clean = cv2.erode(bg_mask_expanded, kernel)
         bg_pixels = image[bg_mask_clean == 255]
+        
+        # Добавляем образцы из буферной зоны
+        if len(bg_pixels) > 50:
+            # Берем несколько случайных образцов из буферной зоны
+            sample_indices = np.random.choice(len(bg_pixels), min(10, len(bg_pixels)), replace=False)
+            for idx in sample_indices:
+                self.bg_samples.append(bg_pixels[idx].astype(np.float32))
         
         if len(bg_pixels) > 100:  # Нужно достаточно пикселей для надежной оценки
             self.avg_bg_color = np.median(bg_pixels, axis=0).astype(np.float32)
+            self.bg_color_mean = np.mean(bg_pixels, axis=0).astype(np.float32)
+            self.bg_color_std = np.std(bg_pixels, axis=0).astype(np.float32)
         else:
             # Fallback: используем края изображения
-            h, w = image.shape[:2]
             edge_pixels = np.concatenate([
                 image[0:5, :].reshape(-1, 3),
                 image[h-5:h, :].reshape(-1, 3),
                 image[:, 0:5].reshape(-1, 3),
                 image[:, w-5:w].reshape(-1, 3)
             ])
-            self.avg_bg_color = np.median(edge_pixels, axis=0).astype(np.float32) if len(edge_pixels) > 0 else np.array([200, 200, 200], dtype=np.float32)
+            if len(edge_pixels) > 0:
+                self.avg_bg_color = np.median(edge_pixels, axis=0).astype(np.float32)
+                self.bg_color_mean = np.mean(edge_pixels, axis=0).astype(np.float32)
+                self.bg_color_std = np.std(edge_pixels, axis=0).astype(np.float32)
+            else:
+                default_bg = np.array([200, 200, 200], dtype=np.float32)
+                self.avg_bg_color = default_bg
+                self.bg_color_mean = default_bg
+                self.bg_color_std = np.array([10, 10, 10], dtype=np.float32)
         
         # Вычисляем порог по цвету в LAB пространстве (более точное)
         image_lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
@@ -150,13 +243,17 @@ class CalibrationConfig:
         self.edge_threshold = int(max(40, min(150, edge_strength * 0.8)))
     
     def _analyze_geometry(self, points: List[Tuple[int, int]], image_size: Tuple[int, int]):
-        """Анализирует геометрические параметры с улучшенной обработкой"""
+        """Анализирует геометрические параметры с улучшенной обработкой и расширенной информацией"""
         w, h = image_size
         points_array = np.array(points, dtype=np.float32)
         
         # Вычисляем площадь документа
         area = cv2.contourArea(points_array)
         area_ratio = area / (w * h)
+        
+        # Сохраняем площадь в пикселях и как долю
+        self.document_area_pixels = int(area)
+        self.document_area_ratio = area_ratio
         
         # Вычисляем соотношение сторон через минимальный ограничивающий прямоугольник
         rect = cv2.minAreaRect(points_array)
@@ -168,18 +265,9 @@ class CalibrationConfig:
         
         aspect_ratio = width / height if height > 0 else 1.0
         
-        # Устанавливаем диапазоны с более широким допуском для большей гибкости
-        # Площадь: от 50% до 150% от калибровочной
-        area_min = max(0.05, area_ratio * 0.5)  # Минимум 5% изображения
-        area_max = min(0.95, area_ratio * 1.5)  # Максимум 95% изображения
-        self.area_range = (area_min, area_max)
+        # Сохраняем размеры и соотношение сторон
+        self.document_aspect_ratio = aspect_ratio
         
-        # Соотношение сторон: от 70% до 130% от калибровочного
-        aspect_min = max(1.0, aspect_ratio * 0.7)
-        aspect_max = min(10.0, aspect_ratio * 1.3)
-        self.aspect_ratio_range = (aspect_min, aspect_max)
-        
-        # Целевой размер (используем вычисленные размеры)
         # Вычисляем размеры через перспективное преобразование для точности
         ordered_pts = self._order_points_for_size(points_array)
         width_calc = max(
@@ -191,7 +279,21 @@ class CalibrationConfig:
             np.linalg.norm(ordered_pts[2] - ordered_pts[1])
         )
         
-        self.target_size = (int(width_calc), int(height_calc))
+        # Сохраняем размеры документа
+        self.document_width = int(width_calc)
+        self.document_height = int(height_calc)
+        self.target_size = (self.document_width, self.document_height)
+        
+        # Устанавливаем диапазоны с более широким допуском для большей гибкости
+        # Площадь: от 50% до 150% от калибровочной
+        area_min = max(0.05, area_ratio * 0.5)  # Минимум 5% изображения
+        area_max = min(0.95, area_ratio * 1.5)  # Максимум 95% изображения
+        self.area_range = (area_min, area_max)
+        
+        # Соотношение сторон: от 70% до 130% от калибровочного
+        aspect_min = max(1.0, aspect_ratio * 0.7)
+        aspect_max = min(10.0, aspect_ratio * 1.3)
+        self.aspect_ratio_range = (aspect_min, aspect_max)
     
     def _order_points_for_size(self, pts: np.ndarray) -> np.ndarray:
         """Вспомогательная функция для упорядочивания точек"""
