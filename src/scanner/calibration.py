@@ -4,6 +4,127 @@ import random
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
 
+class CalibrationCell:
+    """Одна ячейка калибровки для определенного формата документа"""
+    def __init__(self):
+        # Параметры формата для идентификации
+        self.aspect_ratio = 0.0  # Соотношение сторон (ширина/высота)
+        self.size_category = ""  # "small", "medium", "large" (по площади)
+        
+        # Параметры калибровки (копия из CalibrationConfig)
+        self.crop_points = None
+        self.target_size = None
+        
+        # Параметры для автоматического обнаружения
+        self.avg_color = None
+        self.avg_bg_color = None
+        self.color_threshold = 0
+        self.edge_threshold = 0
+        self.area_range = (0, 0)
+        self.aspect_ratio_range = (0, 0)
+        
+        # Расширенная информация
+        self.document_area_pixels = 0
+        self.document_area_ratio = 0.0
+        self.document_width = 0
+        self.document_height = 0
+        self.document_aspect_ratio = 0.0
+        
+        self.document_color_mean = None
+        self.document_color_std = None
+        self.document_color_min = None
+        self.document_color_max = None
+        
+        self.bg_color_mean = None
+        self.bg_color_std = None
+        self.bg_samples = []
+        
+        self.calibration_image_size = None
+        
+        self.calibrated = False
+        self.calibration_samples = 0
+    
+    def copy_from_config(self, config: 'CalibrationConfig'):
+        """Копирует данные из CalibrationConfig"""
+        self.crop_points = config.crop_points
+        self.target_size = config.target_size
+        self.avg_color = config.avg_color
+        self.avg_bg_color = config.avg_bg_color
+        self.color_threshold = config.color_threshold
+        self.edge_threshold = config.edge_threshold
+        self.area_range = config.area_range
+        self.aspect_ratio_range = config.aspect_ratio_range
+        self.document_area_pixels = config.document_area_pixels
+        self.document_area_ratio = config.document_area_ratio
+        self.document_width = config.document_width
+        self.document_height = config.document_height
+        self.document_aspect_ratio = config.document_aspect_ratio
+        self.document_color_mean = config.document_color_mean
+        self.document_color_std = config.document_color_std
+        self.document_color_min = config.document_color_min
+        self.document_color_max = config.document_color_max
+        self.bg_color_mean = config.bg_color_mean
+        self.bg_color_std = config.bg_color_std
+        self.bg_samples = config.bg_samples.copy() if config.bg_samples else []
+        self.calibration_image_size = config.calibration_image_size
+        self.calibrated = config.calibrated
+        self.calibration_samples = config.calibration_samples
+    
+    def to_config(self) -> 'CalibrationConfig':
+        """Создает CalibrationConfig из этой ячейки"""
+        config = CalibrationConfig()
+        config.crop_points = self.crop_points
+        config.target_size = self.target_size
+        config.avg_color = self.avg_color
+        config.avg_bg_color = self.avg_bg_color
+        config.color_threshold = self.color_threshold
+        config.edge_threshold = self.edge_threshold
+        config.area_range = self.area_range
+        config.aspect_ratio_range = self.aspect_ratio_range
+        config.document_area_pixels = self.document_area_pixels
+        config.document_area_ratio = self.document_area_ratio
+        config.document_width = self.document_width
+        config.document_height = self.document_height
+        config.document_aspect_ratio = self.document_aspect_ratio
+        config.document_color_mean = self.document_color_mean
+        config.document_color_std = self.document_color_std
+        config.document_color_min = self.document_color_min
+        config.document_color_max = self.document_color_max
+        config.bg_color_mean = self.bg_color_mean
+        config.bg_color_std = self.bg_color_std
+        config.bg_samples = self.bg_samples.copy() if self.bg_samples else []
+        config.calibration_image_size = self.calibration_image_size
+        config.calibrated = self.calibrated
+        config.calibration_samples = self.calibration_samples
+        return config
+    
+    def matches_format(self, aspect_ratio: float, area_ratio: float) -> bool:
+        """Проверяет соответствует ли формат этой ячейке"""
+        # Проверяем соотношение сторон (допуск 20%)
+        aspect_match = abs(self.aspect_ratio - aspect_ratio) / max(self.aspect_ratio, aspect_ratio, 0.1) < 0.2
+        
+        # Проверяем размер (допуск 30%)
+        size_match = abs(self.document_area_ratio - area_ratio) / max(self.document_area_ratio, area_ratio, 0.01) < 0.3
+        
+        return aspect_match and size_match
+    
+    def get_match_score(self, aspect_ratio: float, area_ratio: float) -> float:
+        """Возвращает оценку соответствия (чем выше, тем лучше)"""
+        if not self.calibrated:
+            return 0.0
+        
+        # Вычисляем отклонения
+        aspect_diff = abs(self.aspect_ratio - aspect_ratio) / max(self.aspect_ratio, aspect_ratio, 0.1)
+        size_diff = abs(self.document_area_ratio - area_ratio) / max(self.document_area_ratio, area_ratio, 0.01)
+        
+        # Чем меньше отклонения, тем выше оценка
+        score = 1.0 / (1.0 + aspect_diff * 2.0 + size_diff * 1.5)
+        
+        # Бонус за большее количество образцов
+        score *= (1.0 + self.calibration_samples * 0.1)
+        
+        return score
+
 class CalibrationConfig:
     """Конфигурация калибровки с параметрами для автоматического обнаружения"""
     def __init__(self):
@@ -307,14 +428,107 @@ class CalibrationConfig:
         return rect
 
 class CalibrationManager:
-    """Менеджер калибровки для настройки параметров обрезки"""
+    """Менеджер калибровки для настройки параметров обрезки с поддержкой ячеек"""
     
     def __init__(self, calibration_config: CalibrationConfig):
         self.config = calibration_config
+        self.calibration_cells: List[CalibrationCell] = []  # Ячейки калибровок
+        self.max_cells = 5  # Максимальное количество ячеек
         self.current_points: List[Tuple[int, int]] = []
         self.current_image: Optional[np.ndarray] = None
         self.image_paths: List[str] = []
         self.current_index = 0
+    
+    def _determine_format(self, points: List[Tuple[int, int]], image_size: Tuple[int, int]) -> Tuple[float, str]:
+        """Определяет формат документа по точкам"""
+        w, h = image_size
+        points_array = np.array(points, dtype=np.float32)
+        
+        # Вычисляем площадь и соотношение сторон
+        area = cv2.contourArea(points_array)
+        area_ratio = area / (w * h)
+        
+        rect = cv2.minAreaRect(points_array)
+        width, height = rect[1]
+        if width < height:
+            width, height = height, width
+        aspect_ratio = width / height if height > 0 else 1.0
+        
+        # Определяем категорию размера
+        if area_ratio < 0.15:
+            size_category = "small"
+        elif area_ratio < 0.35:
+            size_category = "medium"
+        else:
+            size_category = "large"
+        
+        return aspect_ratio, size_category
+    
+    def _find_matching_cell(self, aspect_ratio: float, area_ratio: float) -> Optional[CalibrationCell]:
+        """Находит подходящую ячейку калибровки"""
+        best_cell = None
+        best_score = 0.0
+        
+        for cell in self.calibration_cells:
+            if cell.matches_format(aspect_ratio, area_ratio):
+                score = cell.get_match_score(aspect_ratio, area_ratio)
+                if score > best_score:
+                    best_score = score
+                    best_cell = cell
+        
+        return best_cell
+    
+    def _merge_calibration(self, cell: CalibrationCell, config: CalibrationConfig):
+        """Объединяет новую калибровку с существующей ячейкой (взвешенное среднее)"""
+        # Увеличиваем количество образцов
+        cell.calibration_samples += 1
+        weight_old = (cell.calibration_samples - 1) / cell.calibration_samples
+        weight_new = 1.0 / cell.calibration_samples
+        
+        # Объединяем цвета (взвешенное среднее)
+        if config.avg_color is not None:
+            if cell.avg_color is None:
+                cell.avg_color = config.avg_color.copy()
+            else:
+                cell.avg_color = cell.avg_color * weight_old + config.avg_color * weight_new
+        
+        if config.avg_bg_color is not None:
+            if cell.avg_bg_color is None:
+                cell.avg_bg_color = config.avg_bg_color.copy()
+            else:
+                cell.avg_bg_color = cell.avg_bg_color * weight_old + config.avg_bg_color * weight_new
+        
+        # Объединяем пороги
+        cell.color_threshold = cell.color_threshold * weight_old + config.color_threshold * weight_new
+        cell.edge_threshold = cell.edge_threshold * weight_old + config.edge_threshold * weight_new
+        
+        # Объединяем диапазоны (расширяем)
+        if config.area_range[0] > 0:
+            cell.area_range = (
+                min(cell.area_range[0], config.area_range[0]) * 0.9,
+                max(cell.area_range[1], config.area_range[1]) * 1.1
+            )
+        
+        if config.aspect_ratio_range[0] > 0:
+            cell.aspect_ratio_range = (
+                max(1.0, min(cell.aspect_ratio_range[0], config.aspect_ratio_range[0]) * 0.9),
+                min(10.0, max(cell.aspect_ratio_range[1], config.aspect_ratio_range[1]) * 1.1)
+            )
+        
+        # Объединяем образцы фона
+        if config.bg_samples:
+            cell.bg_samples.extend(config.bg_samples)
+            # Ограничиваем количество образцов (оставляем последние 50)
+            if len(cell.bg_samples) > 50:
+                cell.bg_samples = cell.bg_samples[-50:]
+    
+    def _create_new_cell(self, config: CalibrationConfig, aspect_ratio: float, size_category: str) -> CalibrationCell:
+        """Создает новую ячейку калибровки"""
+        cell = CalibrationCell()
+        cell.aspect_ratio = aspect_ratio
+        cell.size_category = size_category
+        cell.copy_from_config(config)
+        return cell
         
     def load_images_from_folder(self, folder_path: str) -> bool:
         """Загружает изображения из папки для калибровки"""
@@ -376,13 +590,113 @@ class CalibrationManager:
         self.current_points = []
     
     def save_calibration(self) -> bool:
-        """Сохраняет текущую калибровку"""
+        """Сохраняет текущую калибровку в соответствующую ячейку"""
         if self.current_image is None or len(self.current_points) != 4:
             return False
-            
+        
+        h, w = self.current_image.shape[:2]
+        
         # Анализируем изображение и извлекаем параметры
         self.config.analyze_calibration_image(self.current_image, self.current_points)
+        
+        # Определяем формат документа
+        aspect_ratio, size_category = self._determine_format(self.current_points, (w, h))
+        area_ratio = self.config.document_area_ratio
+        
+        # Ищем подходящую ячейку
+        matching_cell = self._find_matching_cell(aspect_ratio, area_ratio)
+        
+        if matching_cell is not None:
+            # Объединяем с существующей ячейкой
+            print(f"📦 Объединение с существующей ячейкой (формат: {aspect_ratio:.2f}, размер: {size_category})")
+            self._merge_calibration(matching_cell, self.config)
+        else:
+            # Создаем новую ячейку
+            if len(self.calibration_cells) >= self.max_cells:
+                # Удаляем ячейку с наименьшим количеством образцов
+                self.calibration_cells.sort(key=lambda c: c.calibration_samples)
+                removed = self.calibration_cells.pop(0)
+                print(f"🗑️  Удалена ячейка с {removed.calibration_samples} образцами (лимит {self.max_cells} ячеек)")
+            
+            new_cell = self._create_new_cell(self.config, aspect_ratio, size_category)
+            self.calibration_cells.append(new_cell)
+            print(f"✨ Создана новая ячейка калибровки (формат: {aspect_ratio:.2f}, размер: {size_category})")
+        
+        # Обновляем основную конфигурацию из лучшей ячейки
+        self._update_main_config()
+        
+        print(f"📊 Всего ячеек калибровки: {len(self.calibration_cells)}")
         return True
+    
+    def _update_main_config(self):
+        """Обновляет основную конфигурацию из ячейки с наибольшим количеством образцов"""
+        if not self.calibration_cells:
+            return
+        
+        # Находим ячейку с наибольшим количеством образцов
+        best_cell = max(self.calibration_cells, key=lambda c: c.calibration_samples)
+        
+        # Копируем данные в основную конфигурацию
+        self.config = best_cell.to_config()
+    
+    def get_best_calibration_for_image(self, image: np.ndarray) -> Optional[CalibrationConfig]:
+        """Возвращает наиболее подходящую калибровку для изображения"""
+        if not self.calibration_cells:
+            return None
+        
+        h, w = image.shape[:2]
+        image_area = w * h
+        
+        # Пробуем найти документ на изображении для определения формата
+        # Используем упрощенный метод - пробуем несколько методов бинаризации
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        
+        # Ищем контуры
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            # Если не нашли контуры, используем ячейку с наибольшим количеством образцов
+            best_cell = max(self.calibration_cells, key=lambda c: c.calibration_samples)
+            return best_cell.to_config()
+        
+        # Берем самый большой контур
+        largest_contour = max(contours, key=cv2.contourArea)
+        area = cv2.contourArea(largest_contour)
+        area_ratio = area / image_area
+        
+        # Аппроксимируем контур
+        epsilon = 0.02 * cv2.arcLength(largest_contour, True)
+        approx = cv2.approxPolyDP(largest_contour, epsilon, True)
+        
+        if len(approx) < 4:
+            # Если не нашли 4 угла, используем ячейку с наибольшим количеством образцов
+            best_cell = max(self.calibration_cells, key=lambda c: c.calibration_samples)
+            return best_cell.to_config()
+        
+        # Вычисляем соотношение сторон
+        rect = cv2.minAreaRect(approx)
+        width, height = rect[1]
+        if width < height:
+            width, height = height, width
+        aspect_ratio = width / height if height > 0 else 1.0
+        
+        # Ищем подходящую ячейку
+        best_cell = None
+        best_score = 0.0
+        
+        for cell in self.calibration_cells:
+            score = cell.get_match_score(aspect_ratio, area_ratio)
+            if score > best_score:
+                best_score = score
+                best_cell = cell
+        
+        if best_cell and best_score > 0.3:  # Минимальный порог соответствия
+            print(f"🎯 Используется ячейка калибровки (оценка: {best_score:.2f})")
+            return best_cell.to_config()
+        else:
+            # Используем ячейку с наибольшим количеством образцов
+            best_cell = max(self.calibration_cells, key=lambda c: c.calibration_samples)
+            return best_cell.to_config()
     
     def get_annotated_image(self) -> Optional[np.ndarray]:
         """Возвращает изображение с отмеченными точками и контуром"""
@@ -423,4 +737,4 @@ class CalibrationManager:
     
     def is_complete(self) -> bool:
         """Проверяет завершена ли калибровка"""
-        return self.config.calibrated and self.config.calibration_samples >= 1
+        return len(self.calibration_cells) > 0

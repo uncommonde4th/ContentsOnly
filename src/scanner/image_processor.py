@@ -123,8 +123,17 @@ class CalibratedImageProcessor:
             # Расширяем чтобы захватить края документа и поля
             binary_clean = cv2.dilate(binary_clean, kernel_large, iterations=3)
             
-            # Ищем контуры
+            # Сначала пробуем строгий режим
             contour = self._find_best_contour(binary_clean, image.shape, strict=True)
+            if contour is not None:
+                # Расширяем контур чтобы захватить весь документ с полями
+                contour = self._expand_contour_slightly(contour, image.shape)
+                # Проверяем что контур разумный
+                if self._validate_contour(contour, image.shape):
+                    return contour
+            
+            # Если строгий режим не нашел, пробуем нестрогий режим с поддержкой вертикальных документов
+            contour = self._find_best_contour(binary_clean, image.shape, strict=False, allow_vertical=True)
             if contour is not None:
                 # Расширяем контур чтобы захватить весь документ с полями
                 contour = self._expand_contour_slightly(contour, image.shape)
@@ -438,8 +447,15 @@ class CalibratedImageProcessor:
         return None
     
     def _find_best_contour(self, binary: np.ndarray, image_shape: Tuple[int, int], 
-                          strict: bool = True) -> Optional[np.ndarray]:
-        """Находит лучший контур удовлетворяющий параметрам калибровки"""
+                          strict: bool = True, allow_vertical: bool = False) -> Optional[np.ndarray]:
+        """Находит лучший контур удовлетворяющий параметрам калибровки
+        
+        Args:
+            binary: Бинарное изображение
+            image_shape: Размеры изображения (h, w)
+            strict: Использовать строгие проверки калибровки
+            allow_vertical: Разрешить вертикально вытянутые документы (до 10:1)
+        """
         contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         if not contours:
@@ -519,6 +535,14 @@ class CalibratedImageProcessor:
             if not found_valid_approx or approx is None:
                 continue
             
+            # Вычисляем соотношение сторон для проверки
+            rect = cv2.minAreaRect(approx)
+            width, height = rect[1]
+            if min(width, height) < 10:  # Слишком маленький
+                continue
+                
+            aspect_ratio = max(width, height) / min(width, height)
+            
             if strict:
                 # Строгие проверки с калибровкой
                 # Проверяем площадь (с более мягкими границами если диапазон слишком узкий)
@@ -530,31 +554,29 @@ class CalibratedImageProcessor:
                     if not (area_min <= area_ratio <= area_max):
                         continue
                 
-                # Проверяем соотношение сторон
-                rect = cv2.minAreaRect(approx)
-                width, height = rect[1]
-                if min(width, height) < 10:  # Слишком маленький
-                    continue
-                    
-                aspect_ratio = max(width, height) / min(width, height)
-                
-                # Проверяем соотношение сторон (с более мягкими границами)
+                # Проверяем соотношение сторон (с поддержкой вертикальных документов)
                 aspect_min, aspect_max = self.calibration_config.aspect_ratio_range
                 if aspect_min > 0 and aspect_max > 0:
-                    aspect_min = max(1.0, aspect_min * 0.7)
-                    aspect_max = min(10.0, aspect_max * 1.3)
+                    # Если разрешены вертикальные документы, значительно расширяем диапазон
+                    if allow_vertical:
+                        # Для вертикальных документов: расширяем до 10:1
+                        aspect_min = max(1.0, aspect_min * 0.5)  # Еще более мягкая нижняя граница
+                        aspect_max = min(10.0, max(aspect_max * 2.0, 8.0))  # Разрешаем до 10:1
+                    else:
+                        # Обычная логика с более мягкими границами
+                        aspect_min = max(1.0, aspect_min * 0.7)
+                        aspect_max = min(10.0, aspect_max * 1.3)
+                    
                     if not (aspect_min <= aspect_ratio <= aspect_max):
                         continue
             else:
                 # Ослабленные проверки - только базовые требования
-                rect = cv2.minAreaRect(approx)
-                width, height = rect[1]
                 if min(width, height) < 20:  # Минимальный размер
                     continue
                 
-                aspect_ratio = max(width, height) / min(width, height)
-                # Только проверяем что это не слишком вытянутый контур
-                if aspect_ratio > 5.0:
+                # Для вертикальных документов разрешаем до 10:1, иначе до 5:1
+                max_aspect = 10.0 if allow_vertical else 5.0
+                if aspect_ratio > max_aspect:
                     continue
             
             # Оцениваем контур
@@ -967,24 +989,46 @@ class CalibratedImageProcessor:
                 print(f"❌ Не удалось загрузить: {image_path}")
                 return None
             
-            original_size = f"{image.shape[1]}x{image.shape[0]}"
-            
-            # Автоматически находим и обрезаем документ
-            result = self.crop_with_calibration(image)
-            
-            new_size = f"{result.shape[1]}x{result.shape[0]}"
-            compression = (result.shape[0] * result.shape[1]) / (image.shape[0] * image.shape[1])
-            
-            print(f"📄 {Path(image_path).name} {original_size} -> {new_size} ({compression*100:.1f}%)")
-            
-            return result
+            return self.process_single_image_from_array(image, image_path)
             
         except Exception as e:
             print(f"❌ Ошибка обработки {image_path}: {e}")
             return cv2.imread(image_path)
     
-    def process_folder(self, input_folder: str, output_folder: str) -> dict:
-        """Обрабатывает папку с изображениями используя калибровку"""
+    def process_single_image_from_array(self, image: np.ndarray, image_path: str = "") -> Optional[np.ndarray]:
+        """Обрабатывает уже загруженное изображение используя калибровку"""
+        try:
+            original_size = f"{image.shape[1]}x{image.shape[0]}"
+            
+            # Автоматически находим и обрезаем документ
+            result = self.crop_with_calibration(image)
+            
+            if result is None:
+                return None
+            
+            new_size = f"{result.shape[1]}x{result.shape[0]}"
+            compression = (result.shape[0] * result.shape[1]) / (image.shape[0] * image.shape[1])
+            
+            filename = Path(image_path).name if image_path else "изображение"
+            print(f"📄 {filename} {original_size} -> {new_size} ({compression*100:.1f}%)")
+            
+            return result
+            
+        except Exception as e:
+            filename = Path(image_path).name if image_path else "изображение"
+            print(f"❌ Ошибка обработки {filename}: {e}")
+            return image  # Возвращаем оригинал при ошибке
+    
+    def process_folder(self, input_folder: str, output_folder: str, 
+                      calibration_manager=None, progress_callback=None) -> dict:
+        """Обрабатывает папку с изображениями используя калибровку
+        
+        Args:
+            input_folder: Папка с входными изображениями
+            output_folder: Папка для сохранения результатов
+            calibration_manager: Менеджер калибровки для выбора подходящей ячейки
+            progress_callback: Функция для обновления прогресса (current, total, filename)
+        """
         input_path = Path(input_folder)
         output_path = Path(output_folder)
         output_path.mkdir(parents=True, exist_ok=True)
@@ -998,11 +1042,38 @@ class CalibratedImageProcessor:
         print(f"\n🎯 Обработка {len(image_files)} файлов с автоматическим обнаружением...")
         
         for i, image_file in enumerate(image_files, 1):
-            output_file = output_path / f"cropped_{image_file.name}"
+            # Обновляем прогресс
+            if progress_callback:
+                progress_callback(i, len(image_files), image_file.name)
+            
+            output_file = output_path / f"{image_file.name}"
+            
+            # Загружаем изображение один раз
+            image = cv2.imread(str(image_file))
+            if image is None:
+                stats['failed'] += 1
+                print(f"❌ {i:2d}/{len(image_files)}: {image_file.name} (не удалось загрузить)")
+                continue
+            
+            # Если есть менеджер калибровки, выбираем подходящую ячейку для каждого изображения
+            old_config = None
+            if calibration_manager:
+                # Получаем подходящую калибровку
+                best_config = calibration_manager.get_best_calibration_for_image(image)
+                if best_config:
+                    # Временно заменяем калибровку
+                    old_config = self.calibration_config
+                    self.calibration_config = best_config
             
             # Убираем проверку существования - файлы будут перезаписываться
             was_existing = output_file.exists()
-            result = self.process_single_image(str(image_file))
+            
+            # Обрабатываем изображение (передаем уже загруженное)
+            result = self.process_single_image_from_array(image, str(image_file))
+            
+            # Восстанавливаем старую калибровку
+            if old_config is not None:
+                self.calibration_config = old_config
             
             if result is not None:
                 cv2.imwrite(str(output_file), result, [
