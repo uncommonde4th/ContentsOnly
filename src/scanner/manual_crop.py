@@ -53,9 +53,10 @@ class ManualCropConfig:
 class ManualCropManager:
     """Менеджер для ручной обрезки с интерактивными точками"""
     
-    def __init__(self, manual_crop_config: ManualCropConfig, calibration_config: Optional[CalibrationConfig] = None):
+    def __init__(self, manual_crop_config: ManualCropConfig, calibration_config: Optional[CalibrationConfig] = None, calibration_manager=None):
         self.config = manual_crop_config
         self.calibration_config = calibration_config
+        self.calibration_manager = calibration_manager  # Менеджер калибровки для работы с ячейками
         self.current_points: List[Tuple[int, int]] = []
         self.current_image: Optional[np.ndarray] = None
         self.image_paths: List[str] = []
@@ -522,58 +523,54 @@ class ManualCropManager:
         return image
     
     def crop_image(self) -> Optional[np.ndarray]:
-        """Обрезает изображение по текущим точкам"""
+        """Обрезает изображение по текущим точкам (простая обрезка по прямоугольнику)"""
         if self.current_image is None or len(self.current_points) != 4:
             return None
         
-        # Используем функцию из image_processor для перспективного преобразования
+        # Используем функцию из image_processor для обрезки
         processor = CalibratedImageProcessor(None, self.calibration_config) if self.calibration_config else None
         
         if processor:
             points_array = np.array(self.current_points, dtype=np.float32)
-            result = processor.four_point_transform(self.current_image, points_array)
+            result = processor.rectangular_crop(self.current_image, points_array)
         else:
-            # Простое перспективное преобразование без калибровки
-            result = self._simple_four_point_transform(self.current_image, self.current_points)
+            # Простая обрезка без калибровки
+            result = self._simple_rectangular_crop(self.current_image, self.current_points)
         
         return result
     
-    def _simple_four_point_transform(self, image: np.ndarray, pts: List[Tuple[int, int]]) -> np.ndarray:
-        """Простое перспективное преобразование по 4 точкам"""
-        pts_array = np.array(pts, dtype=np.float32)
+    def _simple_rectangular_crop(self, image: np.ndarray, pts: List[Tuple[int, int]]) -> np.ndarray:
+        """Простая обрезка по прямоугольнику с отступами (одинаково с автоматической обработкой)"""
+        h, w = image.shape[:2]
         
-        # Упорядочиваем точки
-        rect = self._order_points(pts_array)
-        (tl, tr, br, bl) = rect
+        # Находим ограничивающий прямоугольник
+        x_coords = [pt[0] for pt in pts]
+        y_coords = [pt[1] for pt in pts]
+        
+        x_min = int(min(x_coords))
+        x_max = int(max(x_coords))
+        y_min = int(min(y_coords))
+        y_max = int(max(y_coords))
         
         # Вычисляем размеры
-        widthA = np.sqrt(((br[0] - bl[0]) ** 2) + ((br[1] - bl[1]) ** 2))
-        widthB = np.sqrt(((tr[0] - tl[0]) ** 2) + ((tr[1] - tl[1]) ** 2))
-        maxWidth = max(int(widthA), int(widthB))
+        width = x_max - x_min
+        height = y_max - y_min
         
-        heightA = np.sqrt(((tr[0] - br[0]) ** 2) + ((tr[1] - br[1]) ** 2))
-        heightB = np.sqrt(((tl[0] - bl[0]) ** 2) + ((tl[1] - bl[1]) ** 2))
-        maxHeight = max(int(heightA), int(heightB))
+        # Вычисляем отступ (2% от размера или минимум 15 пикселей)
+        margin_ratio = 0.02 if height / width > 2.0 else 0.015  # Больше отступ для вертикальных документов
+        margin_x = max(15, int(width * margin_ratio))
+        margin_y = max(15, int(height * margin_ratio))
         
-        # Формируем точки назначения
-        dst = np.array([
-            [0, 0],
-            [maxWidth - 1, 0],
-            [maxWidth - 1, maxHeight - 1],
-            [0, maxHeight - 1]], dtype="float32")
+        # Применяем отступы
+        x_min = max(0, x_min - margin_x)
+        y_min = max(0, y_min - margin_y)
+        x_max = min(w, x_max + margin_x)
+        y_max = min(h, y_max + margin_y)
         
-        # Вычисляем матрицу преобразования
-        M = cv2.getPerspectiveTransform(rect, dst)
+        # Обрезаем изображение
+        cropped = image[y_min:y_max, x_min:x_max]
         
-        # Применяем преобразование
-        warped = cv2.warpPerspective(
-            image, M, (maxWidth, maxHeight),
-            flags=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=(255, 255, 255)
-        )
-        
-        return warped
+        return cropped
     
     def _order_points(self, pts: np.ndarray) -> np.ndarray:
         """Упорядочивает точки: top-left, top-right, bottom-right, bottom-left"""
@@ -586,8 +583,13 @@ class ManualCropManager:
         rect[3] = pts[np.argmax(diff)]  # bottom-left
         return rect
     
-    def save_crop(self, output_path: str) -> bool:
-        """Сохраняет обрезанное изображение и добавляет в калибровку"""
+    def save_crop(self, output_path: str, jpeg_quality: int = 85) -> bool:
+        """Сохраняет обрезанное изображение и добавляет в калибровку
+        
+        Args:
+            output_path: Путь для сохранения файла
+            jpeg_quality: Качество JPEG (60-100, по умолчанию 85)
+        """
         if self.current_image is None or len(self.current_points) != 4:
             return False
         
@@ -596,13 +598,49 @@ class ManualCropManager:
         if cropped is None:
             return False
         
+        # Ограничиваем качество в допустимых пределах
+        jpeg_quality = max(60, min(100, int(jpeg_quality)))
+        
         # Сохраняем
         output_file = Path(output_path)
         output_file.parent.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(output_file), cropped, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+        cv2.imwrite(str(output_file), cropped, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
         
         # Добавляем в калибровку для улучшения алгоритма
-        if self.calibration_config is not None:
+        if self.calibration_manager is not None:
+            print("🔧 Добавляем в калибровку для улучшения алгоритма...")
+            # Используем менеджер калибровки для сохранения в ячейку
+            temp_config = CalibrationConfig()
+            temp_config.analyze_calibration_image(self.current_image, self.current_points)
+            
+            # Определяем формат и сохраняем в соответствующую ячейку
+            h, w = self.current_image.shape[:2]
+            aspect_ratio, size_category = self.calibration_manager._determine_format(self.current_points, (w, h))
+            area_ratio = temp_config.document_area_ratio
+            
+            # Ищем подходящую ячейку
+            matching_cell = self.calibration_manager._find_matching_cell(aspect_ratio, area_ratio)
+            
+            if matching_cell is not None:
+                # Объединяем с существующей ячейкой
+                self.calibration_manager._merge_calibration(matching_cell, temp_config)
+                print(f"   ✅ Калибровка объединена с существующей ячейкой (образцов: {matching_cell.calibration_samples})")
+            else:
+                # Создаем новую ячейку
+                if len(self.calibration_manager.calibration_cells) >= self.calibration_manager.max_cells:
+                    self.calibration_manager.calibration_cells.sort(key=lambda c: c.calibration_samples)
+                    removed = self.calibration_manager.calibration_cells.pop(0)
+                    print(f"   🗑️  Удалена ячейка с {removed.calibration_samples} образцами")
+                
+                new_cell = self.calibration_manager._create_new_cell(temp_config, aspect_ratio, size_category)
+                self.calibration_manager.calibration_cells.append(new_cell)
+                print(f"   ✅ Создана новая ячейка калибровки (образцов: {new_cell.calibration_samples})")
+            
+            # Обновляем основную конфигурацию
+            self.calibration_manager._update_main_config()
+            self.calibration_config = self.calibration_manager.config
+        elif self.calibration_config is not None:
+            # Fallback на старый метод
             print("🔧 Добавляем в калибровку для улучшения алгоритма...")
             self.calibration_config.analyze_calibration_image(self.current_image, self.current_points)
             print(f"   ✅ Калибровка обновлена (образцов: {self.calibration_config.calibration_samples})")

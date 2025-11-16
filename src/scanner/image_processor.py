@@ -190,7 +190,7 @@ class CalibratedImageProcessor:
         return None
     
     def _expand_contour_slightly(self, contour: np.ndarray, image_shape: Tuple[int, int]) -> np.ndarray:
-        """Расширяет контур чтобы захватить весь документ с полями (увеличивает размер на 10-15%)"""
+        """Расширяет контур чтобы захватить весь документ с полями и фоном (увеличивает размер на 15-20%)"""
         h, w = image_shape[:2]
         
         try:
@@ -209,16 +209,24 @@ class CalibratedImageProcessor:
             width = np.max(x_coords) - np.min(x_coords)
             height = np.max(y_coords) - np.min(y_coords)
             
-            # УВЕЛИЧИВАЕМ расширение: 10-15% от размера контура (но не менее 20 и не более 50 пикселей)
-            # Это нужно чтобы захватить поля документа, а не только текст
-            expand_x = max(20, min(50, int(width * 0.12)))
-            expand_y = max(20, min(50, int(height * 0.12)))
+            # Определяем соотношение сторон для длинных документов
+            aspect_ratio = height / width if width > 0 else 1.0
+            is_vertical = aspect_ratio > 2.0
+            
+            # УВЕЛИЧИВАЕМ расширение: 15-20% от размера контура
+            # Для вертикальных документов используем больший отступ
+            expand_ratio_x = 0.18 if is_vertical else 0.15
+            expand_ratio_y = 0.20 if is_vertical else 0.15
+            
+            # Минимум 25 пикселей, максимум 80 для длинных документов
+            expand_x = max(25, min(80 if is_vertical else 60, int(width * expand_ratio_x)))
+            expand_y = max(25, min(100 if is_vertical else 80, int(height * expand_ratio_y)))
             
             # Вычисляем центр
             center_x = (np.min(x_coords) + np.max(x_coords)) / 2
             center_y = (np.min(y_coords) + np.max(y_coords)) / 2
             
-            # Расширяем каждую точку от центра
+            # Расширяем каждую точку от центра пропорционально
             expanded_pts = pts.copy()
             for i in range(len(expanded_pts)):
                 dx = expanded_pts[i, 0] - center_x
@@ -827,8 +835,8 @@ class CalibratedImageProcessor:
                 contour = None  # Продолжаем к fallback
             
             if contour is not None:
-                # Выравниваем перспективу
-                result = self.four_point_transform(image, contour_reshaped)
+                # Просто обрезаем по прямоугольнику (без выравнивания перспективы)
+                result = self.rectangular_crop(image, contour_reshaped)
                 return result
         else:
             # Fallback: используем сохраненные точки калибровки если они есть
@@ -843,7 +851,7 @@ class CalibratedImageProcessor:
                 points_array[:, 1] = np.clip(points_array[:, 1], 0, h - 1)
                 
                 print("⚠️  Используем сохраненные точки калибровки (адаптированные к размеру изображения)")
-                result = self.four_point_transform(image, points_array)
+                result = self.rectangular_crop(image, points_array)
                 return result
             else:
                 # Последний fallback: пытаемся найти любой документ без калибровки
@@ -851,14 +859,49 @@ class CalibratedImageProcessor:
                 contour = self._find_any_large_rectangle(image)
                 if contour is not None:
                     print("✅ Найден документ без калибровки")
-                    result = self.four_point_transform(image, contour.reshape(4, 2))
+                    result = self.rectangular_crop(image, contour.reshape(4, 2))
                     return result
                 else:
                     print("⚠️  Документ не найден, возвращаем оригинал")
                     return image
     
+    def rectangular_crop(self, image: np.ndarray, pts: np.ndarray) -> np.ndarray:
+        """Обрезает изображение по прямоугольнику с отступами (без выравнивания перспективы)"""
+        h, w = image.shape[:2]
+        
+        # Находим ограничивающий прямоугольник
+        x_coords = pts[:, 0]
+        y_coords = pts[:, 1]
+        
+        x_min = int(np.min(x_coords))
+        x_max = int(np.max(x_coords))
+        y_min = int(np.min(y_coords))
+        y_max = int(np.max(y_coords))
+        
+        # Вычисляем размеры
+        width = x_max - x_min
+        height = y_max - y_min
+        
+        # Вычисляем отступ (2% от размера или минимум 15 пикселей)
+        margin_ratio = 0.02 if height / width > 2.0 else 0.015  # Больше отступ для вертикальных документов
+        margin_x = max(15, int(width * margin_ratio))
+        margin_y = max(15, int(height * margin_ratio))
+        
+        # Применяем отступы
+        x_min = max(0, x_min - margin_x)
+        y_min = max(0, y_min - margin_y)
+        x_max = min(w, x_max + margin_x)
+        y_max = min(h, y_max + margin_y)
+        
+        # Обрезаем изображение
+        cropped = image[y_min:y_max, x_min:x_max]
+        
+        print(f"📐 Обрезка: {width}x{height} -> {x_max-x_min}x{y_max-y_min} (отступ {margin_x}x{margin_y})")
+        
+        return cropped
+    
     def four_point_transform(self, image: np.ndarray, pts: np.ndarray) -> np.ndarray:
-        """Выравнивает перспективу по 4 точкам, вычисляя размеры из найденных точек"""
+        """Выравнивает перспективу по 4 точкам, вычисляя размеры из найденных точек с отступами"""
         # Упорядочиваем точки
         rect = self.order_points(pts)
         (tl, tr, br, bl) = rect
@@ -893,22 +936,53 @@ class CalibratedImageProcessor:
             print("⚠️  Слишком маленький размер, возвращаем оригинал")
             return image
         
-        print(f"📐 Вычислены размеры из найденных точек: {maxWidth}x{maxHeight}")
+        # Вычисляем отступ (2% от размера или минимум 15 пикселей для гарантии видимости фона)
+        # Для длинных документов используем больший отступ
+        margin_ratio = 0.02 if maxHeight / maxWidth > 2.0 else 0.015  # Больше отступ для вертикальных документов
+        margin_x = max(15, int(maxWidth * margin_ratio))
+        margin_y = max(15, int(maxHeight * margin_ratio))
         
-        # Формируем точки назначения для прямоугольника
+        # Смещаем исходные точки наружу, чтобы захватить фон вокруг документа
+        # Вычисляем центр документа
+        center_x = (tl[0] + tr[0] + br[0] + bl[0]) / 4.0
+        center_y = (tl[1] + tr[1] + br[1] + bl[1]) / 4.0
+        
+        # Вычисляем средние размеры для определения смещения
+        avg_width = (widthA + widthB) / 2.0
+        avg_height = (heightA + heightB) / 2.0
+        
+        # Смещаем каждую точку наружу от центра пропорционально
+        expand_factor_x = margin_x / (avg_width / 2.0) if avg_width > 0 else 0.02
+        expand_factor_y = margin_y / (avg_height / 2.0) if avg_height > 0 else 0.02
+        
+        # Расширяем точки наружу
+        expanded_rect = rect.copy()
+        for i in range(4):
+            dx = rect[i][0] - center_x
+            dy = rect[i][1] - center_y
+            expanded_rect[i][0] = rect[i][0] + dx * expand_factor_x
+            expanded_rect[i][1] = rect[i][1] + dy * expand_factor_y
+        
+        # Увеличиваем размеры вывода на отступы
+        output_width = maxWidth + 2 * margin_x
+        output_height = maxHeight + 2 * margin_y
+        
+        print(f"📐 Вычислены размеры: {maxWidth}x{maxHeight}, выход: {output_width}x{output_height} (отступ {margin_x}x{margin_y})")
+        
+        # Формируем точки назначения для прямоугольника с отступом
         dst = np.array([
-            [0, 0],
-            [maxWidth - 1, 0],
-            [maxWidth - 1, maxHeight - 1],
-            [0, maxHeight - 1]], dtype="float32")
+            [margin_x, margin_y],
+            [output_width - 1 - margin_x, margin_y],
+            [output_width - 1 - margin_x, output_height - 1 - margin_y],
+            [margin_x, output_height - 1 - margin_y]], dtype="float32")
         
-        # Вычисляем матрицу преобразования
-        M = cv2.getPerspectiveTransform(rect, dst)
+        # Вычисляем матрицу преобразования из расширенных точек
+        M = cv2.getPerspectiveTransform(expanded_rect, dst)
         
         # Применяем преобразование с улучшенной интерполяцией
         # Используем BORDER_CONSTANT с белым фоном для областей вне документа
         warped = cv2.warpPerspective(
-            image, M, (maxWidth, maxHeight),
+            image, M, (output_width, output_height),
             flags=cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_CONSTANT,
             borderValue=(255, 255, 255)  # Белый фон
@@ -1020,7 +1094,7 @@ class CalibratedImageProcessor:
             return image  # Возвращаем оригинал при ошибке
     
     def process_folder(self, input_folder: str, output_folder: str, 
-                      calibration_manager=None, progress_callback=None) -> dict:
+                      calibration_manager=None, progress_callback=None, overwrite=True) -> dict:
         """Обрабатывает папку с изображениями используя калибровку
         
         Args:
@@ -1037,7 +1111,7 @@ class CalibratedImageProcessor:
         for ext in ['*.jpg', '*.jpeg', '*.JPG', '*.JPEG']:
             image_files.extend(input_path.glob(ext))
         
-        stats = {'total': len(image_files), 'processed': 0, 'failed': 0}
+        stats = {'total': len(image_files), 'processed': 0, 'failed': 0, 'skipped': 0}
         
         print(f"\n🎯 Обработка {len(image_files)} файлов с автоматическим обнаружением...")
         
@@ -1047,6 +1121,12 @@ class CalibratedImageProcessor:
                 progress_callback(i, len(image_files), image_file.name)
             
             output_file = output_path / f"{image_file.name}"
+            
+            # Проверяем существование файла если перезапись отключена
+            if not overwrite and output_file.exists():
+                stats['skipped'] += 1
+                print(f"⏭️  {i:2d}/{len(image_files)}: {image_file.name} (пропущен, файл существует)")
+                continue
             
             # Загружаем изображение один раз
             image = cv2.imread(str(image_file))

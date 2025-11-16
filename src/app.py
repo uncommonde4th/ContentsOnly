@@ -22,7 +22,7 @@ class DocumentScannerApp:
         
         # Ручная обрезка
         self.manual_crop_config = ManualCropConfig()
-        self.manual_crop_manager = ManualCropManager(self.manual_crop_config, self.calibration_config)
+        self.manual_crop_manager = ManualCropManager(self.manual_crop_config, self.calibration_config, self.calibration_manager)
         self.current_manual_crop_image = None
         
         self.setup_gui()
@@ -116,8 +116,32 @@ class DocumentScannerApp:
                        variable=self.hint_enabled_var,
                        command=self.on_hint_toggle).grid(row=2, column=0, columnspan=3, sticky='w', pady=5)
         
+        # Опция перезаписи файлов
+        self.manual_crop_overwrite_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(top_frame, text="Перезаписывать существующие файлы", 
+                       variable=self.manual_crop_overwrite_var).grid(row=3, column=0, columnspan=3, sticky='w', pady=5)
+        
+        # Опция сжатия изображений
+        compression_frame = ttk.Frame(top_frame)
+        compression_frame.grid(row=4, column=0, columnspan=3, pady=5, sticky='w')
+        ttk.Label(compression_frame, text="Сжатие JPEG:").grid(row=0, column=0, sticky='w')
+        self.manual_crop_compression_var = tk.IntVar(value=85)  # По умолчанию 85 - хороший баланс
+        compression_scale = ttk.Scale(compression_frame, from_=60, to=100, 
+                                     variable=self.manual_crop_compression_var, 
+                                     orient='horizontal', length=200)
+        compression_scale.grid(row=0, column=1, padx=5)
+        self.manual_crop_compression_label = ttk.Label(compression_frame, text="85%")
+        self.manual_crop_compression_label.grid(row=0, column=2, padx=5)
+        
+        def update_manual_compression_label(*args):
+            val = self.manual_crop_compression_var.get()
+            self.manual_crop_compression_label.config(text=f"{val}%")
+        
+        self.manual_crop_compression_var.trace('w', update_manual_compression_label)
+        update_manual_compression_label()  # Инициализируем
+        
         ttk.Button(top_frame, text="🔄 Загрузить изображения", 
-                  command=self.load_manual_crop_images).grid(row=3, column=0, columnspan=3, pady=10)
+                  command=self.load_manual_crop_images).grid(row=5, column=0, columnspan=3, pady=10)
         
         # Область изображения
         self.manual_crop_image_frame = ttk.Frame(self.manual_crop_frame)
@@ -176,19 +200,45 @@ class DocumentScannerApp:
         self.process_status_var = tk.StringVar(value="❌ Калибровка не выполнена")
         ttk.Label(main_frame, textvariable=self.process_status_var, font=("Arial", 10)).grid(row=2, column=0, columnspan=3, pady=10)
         
+        # Опция перезаписи файлов
+        self.process_overwrite_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(main_frame, text="Перезаписывать существующие файлы", 
+                       variable=self.process_overwrite_var).grid(row=3, column=0, columnspan=3, pady=5, sticky='w')
+        
+        # Опция сжатия изображений
+        compression_frame = ttk.Frame(main_frame)
+        compression_frame.grid(row=4, column=0, columnspan=3, pady=5, sticky='w')
+        ttk.Label(compression_frame, text="Сжатие JPEG:").grid(row=0, column=0, sticky='w')
+        self.process_compression_var = tk.IntVar(value=85)  # По умолчанию 85 - хороший баланс
+        compression_scale = ttk.Scale(compression_frame, from_=60, to=100, 
+                                     variable=self.process_compression_var, 
+                                     orient='horizontal', length=200)
+        compression_scale.grid(row=0, column=1, padx=5)
+        self.process_compression_label = ttk.Label(compression_frame, text="85%")
+        self.process_compression_label.grid(row=0, column=2, padx=5)
+        
+        def update_compression_label(*args):
+            val = self.process_compression_var.get()
+            self.process_compression_label.config(text=f"{val}%")
+            # Обновляем качество в конфигурации
+            self.processing_config.jpeg_quality = val
+        
+        self.process_compression_var.trace('w', update_compression_label)
+        update_compression_label()  # Инициализируем
+        
         self.process_btn = ttk.Button(main_frame, text="🚀 НАЧАТЬ ОБРАБОТКУ", 
                                     command=self.start_processing, state='disabled')
-        self.process_btn.grid(row=3, column=0, columnspan=3, pady=20)
+        self.process_btn.grid(row=5, column=0, columnspan=3, pady=20)
         
         # Прогресс-бар
         self.progress_var = tk.StringVar(value="")
-        ttk.Label(main_frame, textvariable=self.progress_var).grid(row=4, column=0, columnspan=3, pady=5)
+        ttk.Label(main_frame, textvariable=self.progress_var).grid(row=6, column=0, columnspan=3, pady=5)
         
         self.progress_bar = ttk.Progressbar(main_frame, mode='determinate')
-        self.progress_bar.grid(row=5, column=0, columnspan=3, sticky='ew', padx=20, pady=5)
+        self.progress_bar.grid(row=7, column=0, columnspan=3, sticky='ew', padx=20, pady=5)
         
         self.progress_filename_var = tk.StringVar(value="")
-        ttk.Label(main_frame, textvariable=self.progress_filename_var, font=("Arial", 9)).grid(row=6, column=0, columnspan=3, pady=2)
+        ttk.Label(main_frame, textvariable=self.progress_filename_var, font=("Arial", 9)).grid(row=8, column=0, columnspan=3, pady=2)
     
     def browse_calibration_folder(self):
         folder = filedialog.askdirectory(title="Выберите папку для калибровки")
@@ -303,16 +353,10 @@ class DocumentScannerApp:
         if (0 <= x_img < self.current_calibration_image.shape[1] and 
             0 <= y_img < self.current_calibration_image.shape[0]):
             
-            points_before = len(self.calibration_manager.current_points)
             self.calibration_manager.add_point(x_img, y_img)
-            points_after = len(self.calibration_manager.current_points)
             
             # Обновляем отображение
             self.display_calibration_image(self.current_calibration_image)
-            
-            # Показываем сообщение только если добавили 4-ю точку (было 3, стало 4)
-            if points_before == 3 and points_after == 4:
-                messagebox.showinfo("Успех", "4 точки отмечены! Сохраните калибровку или перейдите к следующему изображению.")
     
     def remove_last_point(self):
         """Удаляет последнюю точку"""
@@ -383,7 +427,8 @@ class DocumentScannerApp:
                 self.process_input_var.get(), 
                 self.process_output_var.get(),
                 calibration_manager=self.calibration_manager,
-                progress_callback=update_progress
+                progress_callback=update_progress,
+                overwrite=self.process_overwrite_var.get()
             )
             
             self.process_btn.config(state='normal')
@@ -391,9 +436,10 @@ class DocumentScannerApp:
             self.progress_bar['value'] = 100
             self.progress_filename_var.set("")
             
+            skipped_text = f"\nПропущено: {stats.get('skipped', 0)}" if stats.get('skipped', 0) > 0 else ""
             messagebox.showinfo("Готово!", 
                               f"Обработано: {stats['processed']} файлов\n"
-                              f"Ошибок: {stats['failed']}\n"
+                              f"Ошибок: {stats['failed']}{skipped_text}\n"
                               f"Папка с результатами:\n{self.process_output_var.get()}")
             
         except Exception as e:
@@ -622,12 +668,20 @@ class DocumentScannerApp:
             current_path = self.manual_crop_manager.image_paths[self.manual_crop_manager.current_index - 1]
             filename = Path(current_path).name
             output_path = Path(self.manual_crop_output_var.get()) / filename
+            
+            # Проверяем существование файла если перезапись отключена
+            if not self.manual_crop_overwrite_var.get() and output_path.exists():
+                messagebox.showwarning("Файл существует", 
+                                     f"Файл {filename} уже существует.\n"
+                                     "Включите опцию 'Перезаписывать существующие файлы' для перезаписи.")
+                return
         else:
             messagebox.showerror("Ошибка", "Нет текущего изображения!")
             return
         
-        # Сохраняем
-        if self.manual_crop_manager.save_crop(str(output_path)):
+        # Сохраняем с выбранным качеством сжатия
+        jpeg_quality = self.manual_crop_compression_var.get()
+        if self.manual_crop_manager.save_crop(str(output_path), jpeg_quality):
             # Переходим к следующему изображению
             result = self.manual_crop_manager.get_next_image()
             if result is None:

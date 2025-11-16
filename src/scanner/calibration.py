@@ -640,19 +640,23 @@ class CalibrationManager:
         self.config = best_cell.to_config()
     
     def get_best_calibration_for_image(self, image: np.ndarray) -> Optional[CalibrationConfig]:
-        """Возвращает наиболее подходящую калибровку для изображения"""
+        """Возвращает наиболее подходящую калибровку для изображения (оптимизированная версия)"""
         if not self.calibration_cells:
             return None
+        
+        # Если только одна ячейка, возвращаем её
+        if len(self.calibration_cells) == 1:
+            return self.calibration_cells[0].to_config()
         
         h, w = image.shape[:2]
         image_area = w * h
         
-        # Пробуем найти документ на изображении для определения формата
-        # Используем упрощенный метод - пробуем несколько методов бинаризации
+        # Упрощенный и быстрый метод определения формата
+        # Используем только Otsu бинаризацию для скорости
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         
-        # Ищем контуры
+        # Ищем контуры (только внешние для скорости)
         contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
             # Если не нашли контуры, используем ячейку с наибольшим количеством образцов
@@ -664,8 +668,8 @@ class CalibrationManager:
         area = cv2.contourArea(largest_contour)
         area_ratio = area / image_area
         
-        # Аппроксимируем контур
-        epsilon = 0.02 * cv2.arcLength(largest_contour, True)
+        # Быстрая аппроксимация
+        epsilon = 0.03 * cv2.arcLength(largest_contour, True)
         approx = cv2.approxPolyDP(largest_contour, epsilon, True)
         
         if len(approx) < 4:
@@ -691,7 +695,6 @@ class CalibrationManager:
                 best_cell = cell
         
         if best_cell and best_score > 0.3:  # Минимальный порог соответствия
-            print(f"🎯 Используется ячейка калибровки (оценка: {best_score:.2f})")
             return best_cell.to_config()
         else:
             # Используем ячейку с наибольшим количеством образцов
