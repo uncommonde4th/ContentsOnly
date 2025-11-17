@@ -2,11 +2,14 @@ from cx_Freeze import setup, Executable
 import sys
 import os
 
-# Dependencies are automatically detected, but it might need fine tuning.
+# Добавляем src в PYTHONPATH
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+
 build_exe_options = {
     "packages": [
         "os", "sys", "tkinter", "cv2", "numpy", "PIL", 
-        "logging", "pathlib", "dataclasses", "typing"
+        "logging", "pathlib", "dataclasses", "typing",
+        "scanner", "gui", "utils"  # ЯВНО добавляем ваши пакеты
     ],
     "include_files": [
         ("resources/", "resources/"),
@@ -15,11 +18,7 @@ build_exe_options = {
     "optimize": 2,
 }
 
-# GUI applications require a different base on Windows (the default is for a
-# console application).
 base = None
-if sys.platform == "win32":
-    base = "Win32GUI"
 
 setup(
     name="ContentsOnly",
@@ -30,8 +29,7 @@ setup(
         Executable(
             "src/app.py",
             base=base,
-            target_name="DocumentScanner.exe",
-            icon="resources/app.ico"
+            target_name="ContentsOnly"
         )
     ]
 )
