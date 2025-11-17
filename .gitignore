@@ -3,6 +3,16 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Бинарные файлы и сборки
+build/
+build_win/
+build_windows/
+build_venv/
+release/
+*.exe
+*.tar.gz
+*.zip
+
 # C extensions
 *.so
 
