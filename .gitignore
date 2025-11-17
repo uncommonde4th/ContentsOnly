@@ -218,3 +218,4 @@ build_venv/
 *.tmp
 *.temp
 ~*
+release/
