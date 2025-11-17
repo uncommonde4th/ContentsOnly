@@ -22,7 +22,7 @@ if sys.platform == "win32":
     base = "Win32GUI"
 
 setup(
-    name="Document Scanner",
+    name="ContentsOnly",
     version="1.0.0",
     description="Автоматическая обрезка документов из фотографий",
     options={"build_exe": build_exe_options},
