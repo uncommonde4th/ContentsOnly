@@ -1108,7 +1108,7 @@ class CalibratedImageProcessor:
         output_path.mkdir(parents=True, exist_ok=True)
         
         image_files = []
-        for ext in ['*.jpg', '*.jpeg', '*.JPG', '*.JPEG']:
+        for ext in ['*.jpg', '*.jpeg', '*.JPG', '*.JPEG', '*.png', '*.PNG', '*.bmp', '*.BMP', '*.tiff', '*.TIFF']:
             image_files.extend(input_path.glob(ext))
         
         stats = {'total': len(image_files), 'processed': 0, 'failed': 0, 'skipped': 0}
@@ -1120,19 +1120,35 @@ class CalibratedImageProcessor:
             if progress_callback:
                 progress_callback(i, len(image_files), image_file.name)
             
-            output_file = output_path / f"{image_file.name}"
+            # Нормализуем имя файла как в manual_crop
+            original_filename = image_file.name
+            print(f"Оригинальное имя файла: {original_filename}")
+            
+            # Декодируем испорченное имя
+            decoded_filename = self._decode_corrupted_filename(original_filename)
+            print(f"После декодирования: {decoded_filename}")
+            
+            # Нормализуем расширение
+            normalized_name = self._normalize_extension(decoded_filename)
+            print(f"После нормализации расширения: {normalized_name}")
+            
+            # Нормализуем имя файла
+            final_filename = self._normalize_filename(normalized_name)
+            print(f"Финальное имя: {final_filename}")
+            
+            output_file = output_path / final_filename
             
             # Проверяем существование файла если перезапись отключена
             if not overwrite and output_file.exists():
                 stats['skipped'] += 1
-                print(f"⏭️  {i:2d}/{len(image_files)}: {image_file.name} (пропущен, файл существует)")
+                print(f"⏭️  {i:2d}/{len(image_files)}: {final_filename} (пропущен, файл существует)")
                 continue
             
             # Загружаем изображение один раз
             image = cv2.imread(str(image_file))
             if image is None:
                 stats['failed'] += 1
-                print(f"❌ {i:2d}/{len(image_files)}: {image_file.name} (не удалось загрузить)")
+                print(f"❌ {i:2d}/{len(image_files)}: {final_filename} (не удалось загрузить)")
                 continue
             
             # Если есть менеджер калибровки, выбираем подходящую ячейку для каждого изображения
@@ -1161,12 +1177,174 @@ class CalibratedImageProcessor:
                 ])
                 stats['processed'] += 1
                 if was_existing:
-                    print(f"✅ {i:2d}/{len(image_files)}: {image_file.name} (перезаписан)")
+                    print(f"✅ {i:2d}/{len(image_files)}: {final_filename} (перезаписан)")
                 else:
-                    print(f"✅ {i:2d}/{len(image_files)}: {image_file.name}")
+                    print(f"✅ {i:2d}/{len(image_files)}: {final_filename}")
             else:
                 stats['failed'] += 1
-                print(f"❌ {i:2d}/{len(image_files)}: {image_file.name}")
+                print(f"❌ {i:2d}/{len(image_files)}: {final_filename}")
         
         print(f"\n📊 Готово! Успешно: {stats['processed']}/{stats['total']}")
         return stats
+
+    def _normalize_filename(self, filename):
+        """
+        Нормализует имя файла, оставляя только разрешенные символы
+        """
+        path = Path(filename)
+        name_without_ext = path.stem
+        original_ext = path.suffix
+        
+        print(f"Нормализация имени: '{name_without_ext}'")
+        
+        # Разрешенные символы: русские и английские буквы, цифры, основные спецсимволы
+        allowed_chars = set(
+            'abcdefghijklmnopqrstuvwxyz' +
+            'ABCDEFGHIJKLMNOPQRSTUVWXYZ' +
+            'абвгдеёжзийклмнопрстуфхцчшщъыьэюя' +
+            'АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ' +
+            '0123456789' +
+            '_- .()[]{}!@#$%^&+='
+        )
+        
+        # Нормализуем имя файла
+        normalized_name = ''
+        for char in name_without_ext:
+            if char in allowed_chars:
+                normalized_name += char
+            else:
+                # Заменяем запрещенные символы на подчеркивание
+                print(f"Заменяем символ: '{char}' (код: {ord(char)})")
+                normalized_name += '_'
+        
+        # Если после нормализации имя пустое, создаем случайное
+        if not normalized_name.strip('_. '):
+            import random
+            import string
+            random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+            normalized_name = f"image_{random_suffix}"
+        
+        # Убираем множественные подчеркивания и обрезаем длинные имена
+        normalized_name = '_'.join(filter(None, normalized_name.split('_')))
+        if len(normalized_name) > 100:
+            normalized_name = normalized_name[:100]
+        
+        result = normalized_name + original_ext
+        print(f"После нормализации имени: '{result}'")
+        return result
+
+    def _normalize_extension(self, filename):
+        """
+        Нормализует расширение файла, оставляя только одно стандартное расширение
+        """
+        path = Path(filename)
+        name_without_ext = path.stem
+        
+        # Получаем все возможные расширения (могут быть множественные)
+        suffixes = path.suffixes
+        original_ext = ''.join(suffixes).lower() if suffixes else ''
+        
+        print(f"Нормализация расширения: '{filename}' -> имя: '{name_without_ext}', расширения: {suffixes}")
+        
+        # Словарь для нормализации расширений
+        extension_map = {
+            '.jpeg': '.jpg', '.jpe': '.jpg', '.jfif': '.jpg', '.jif': '.jpg',
+            '.ipg': '.jpg', '.jpgg': '.jpg', '.jpg.jpg': '.jpg',
+            '.png': '.png', '.tiff': '.tiff', '.tif': '.tiff',
+            '.bmp': '.bmp', '.gif': '.gif', '.webp': '.webp'
+        }
+        
+        # Нормализуем комбинацию расширений
+        combined_ext = original_ext
+        normalized_ext = extension_map.get(combined_ext, '.jpg')  # по умолчанию jpg
+        
+        # Если комбинированного расширения нет в маппинге, берем последнее
+        if combined_ext not in extension_map and suffixes:
+            last_ext = suffixes[-1].lower()
+            normalized_ext = extension_map.get(last_ext, '.jpg')
+        
+        # Убираем все существующие расширения из имени
+        final_name = name_without_ext
+        while True:
+            temp_path = Path(final_name)
+            temp_suffix = temp_path.suffix.lower()
+            if temp_suffix and (temp_suffix in extension_map or 
+                               any(ext in temp_suffix for ext in ['.jpg', '.png', '.tiff', '.bmp', '.gif', '.webp'])):
+                final_name = temp_path.stem
+            else:
+                break
+        
+        # Убираем лишние символы в конце имени
+        final_name = final_name.rstrip('«»„"”´`¨¯¸ºª¿¡')
+        
+        result = final_name + normalized_ext
+        print(f"После нормализации расширения: '{result}'")
+        return result
+
+    def _decode_corrupted_filename(self, filename):
+        """
+        Пытается декодировать испорченные имена файлов с русскими буквами
+        """
+        try:
+            # Убираем лишние расширения сначала
+            clean_name = Path(filename).stem
+            
+            print(f"Декодируем имя: '{clean_name}'")
+            
+            # Пробуем прямое исправление символов
+            fixed_by_mapping = self._fix_double_encoding(clean_name)
+            if fixed_by_mapping != clean_name:
+                print(f"Исправлено по маппингу: '{clean_name}' -> '{fixed_by_mapping}'")
+                return fixed_by_mapping
+            
+            # Пробуем исправить двойную перекодировку
+            try:
+                # ÉâÇäÇ в UTF-8 байтах -> декодируем как Windows-1251
+                current_bytes = clean_name.encode('utf-8')
+                decoded_name = current_bytes.decode('windows-1251')
+                
+                print(f"Двойное декодирование: '{clean_name}' -> '{decoded_name}'")
+                
+                if any(cyrillic in decoded_name for cyrillic in 'АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ'):
+                    return decoded_name
+                    
+            except (UnicodeEncodeError, UnicodeDecodeError) as e:
+                print(f"Ошибка двойного декодирования: {e}")
+            
+            print(f"Декодирование не изменило имя, возвращаем: '{clean_name}'")
+            return clean_name
+            
+        except Exception as e:
+            print(f"Ошибка декодирования {filename}: {e}")
+            return filename
+
+    def _fix_double_encoding(self, corrupted_name):
+        """
+        Специальная функция для исправления двойной перекодировки
+        Пример: 'РГАДА' -> 'ÉâÇäÇ'
+        """
+        mapping = {
+            # Заглавные русские буквы
+            'É': 'Р', 'â': 'Г', 'Ç': 'А', 'ä': 'Д', 
+            'à': 'Б', 'á': 'В', 'ã': 'Г', 'å': 'Е', 'ç': 'З',
+            'è': 'И', 'é': 'Й', 'ê': 'К', 'ë': 'Л', 'ì': 'М',
+            'í': 'Б', 'î': 'О', 'ï': 'П', 'ð': 'Р', 'ñ': 'С',
+            'ó': 'У', 'ô': 'Ф', 'õ': 'Х', 'ö': 'Ц', '÷': 'Ч',
+            'ø': 'Ш', 'ù': 'Щ', 'ú': 'Ъ', 'û': 'Ы', 'ü': 'Ь',
+            'ý': 'Э', 'þ': 'Ю', 'ÿ': 'Я',
+            
+            # Специальные символы
+            '«': 'О', '»': '-', '„': '-', '“': '-', '”': '-',
+            '´': "'", '`': "'", '¨': '"', '¯': '-', '¸': ',',
+            'º': '.', 'ª': '.', '¿': '?', '¡': '!',  # для вашего случая с «í
+        }
+        
+        fixed_name = ''
+        for char in corrupted_name:
+            if char in mapping:
+                fixed_name += mapping[char]
+            else:
+                fixed_name += char
+        
+        return fixed_name
+
