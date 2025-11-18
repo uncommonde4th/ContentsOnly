@@ -30,7 +30,7 @@ class DocumentScannerApp:
     def setup_gui(self):
         """Создает GUI с калибровкой"""
         self.root = tk.Tk()
-        self.root.title("Document Scanner with Calibration")
+        self.root.title("ContentsOnly Document Cropper")
         self.root.geometry("1600x1400")
         
         # Создаем notebook для вкладок
@@ -58,11 +58,18 @@ class DocumentScannerApp:
     
     def setup_calibration_tab(self):
         """Настраивает вкладку калибровки"""
+        # Установка шрифта с поддержкой Unicode
+        self.font = ("DejaVu", 10)
+    
+        # Верхняя панель
+        top_frame = ttk.Frame(self.calibration_frame)
+        top_frame.pack(fill='x', padx=10, pady=10)
+    
         # Верхняя панель
         top_frame = ttk.Frame(self.calibration_frame)
         top_frame.pack(fill='x', padx=10, pady=10)
         
-        ttk.Label(top_frame, text="Папка для калибровки:").grid(row=0, column=0, sticky='w')
+        ttk.Label(top_frame, text="Папка для калибровки:", font = self.font).grid(row=0, column=0, sticky='w')
         self.calib_input_var = tk.StringVar()
         ttk.Entry(top_frame, textvariable=self.calib_input_var, width=50).grid(row=0, column=1, padx=5)
         ttk.Button(top_frame, text="📁", command=self.browse_calibration_folder, width=3).grid(row=0, column=2)
@@ -96,6 +103,7 @@ class DocumentScannerApp:
     
     def setup_manual_crop_tab(self):
         """Настраивает вкладку ручной обрезки"""
+
         # Верхняя панель
         top_frame = ttk.Frame(self.manual_crop_frame)
         top_frame.pack(fill='x', padx=10, pady=10)
@@ -292,6 +300,10 @@ class DocumentScannerApp:
         self.display_calibration_image(image)
         
         current, total = self.calibration_manager.get_progress()
+
+        if isinstance(filename, bytes):
+            filename = filename.decode("utf-8", errors="replace")
+
         self.calib_status_var.set(f"Изображение {current}/{total}: {filename} - Отметьте 4 угла документа")
     
     def display_calibration_image(self, image: np.ndarray):
@@ -361,13 +373,13 @@ class DocumentScannerApp:
     def remove_last_point(self):
         """Удаляет последнюю точку"""
         self.calibration_manager.remove_last_point()
-        if self.current_calibration_image:
+        if self.current_calibration_image is not None:
             self.display_calibration_image(self.current_calibration_image)
     
     def clear_points(self):
         """Очищает все точки"""
         self.calibration_manager.clear_points()
-        if self.current_calibration_image:
+        if self.current_calibration_image is not None:
             self.display_calibration_image(self.current_calibration_image)
     
     def save_calibration(self):
@@ -398,7 +410,7 @@ class DocumentScannerApp:
             return
         
         # Переключаем на вкладку обработки
-        self.notebook.select(1)
+        # self.notebook.select(1)
         
         # Запускаем в отдельном потоке
         thread = threading.Thread(target=self.process_images)

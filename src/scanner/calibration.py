@@ -726,11 +726,11 @@ class CalibrationManager:
                        cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
         
         # Добавляем инструкцию
-        instruction = "Щелкните 4 угла документа (по часовой стрелке)"
-        cv2.putText(image, instruction, (20, 40), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-        cv2.putText(image, f"Точек: {len(self.current_points)}/4", (20, 80), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        #instruction = "Щелкните 4 угла документа (по часовой стрелке)"
+        #cv2.putText(image, instruction, (20, 40), 
+        #           cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        #cv2.putText(image, f"Точек: {len(self.current_points)}/4", (20, 80), 
+        #           cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
         
         return image
     
