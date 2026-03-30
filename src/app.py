@@ -260,9 +260,9 @@ class DocumentScannerApp:
             # Если включили обрезку, проверяем калибровку
             self.update_calibration_status()
         else:
-            # Если выключили обрезку, кнопка всегда активна
+            # Если выключили обрезку - будет сжатие
             self.process_btn.config(state='normal')
-            self.process_status_var.set("✅ Обрезка отключена (файлы будут скопированы без изменений)")
+            self.process_status_var.set("✅ Обрезка отключена (файлы будут сжаты до выбранного качества)")
     
     def browse_calibration_folder(self):
         folder = filedialog.askdirectory(title="Выберите папку для калибровки")
@@ -502,7 +502,7 @@ class DocumentScannerApp:
     
     def copy_images_without_cropping(self, input_folder, output_folder, progress_callback=None, overwrite=False):
         """
-        Копирует изображения без обрезки (простое копирование)
+        Копирует изображения с применением сжатия JPEG (без обрезки)
         """
         import shutil
         
@@ -529,6 +529,8 @@ class DocumentScannerApp:
         failed = 0
         skipped = 0
         
+        jpeg_quality = self.process_compression_var.get()
+        
         for i, img_path in enumerate(image_files):
             try:
                 # Нормализуем имя файла
@@ -542,16 +544,31 @@ class DocumentScannerApp:
                         progress_callback(i + 1, total, f"{img_path.name} (пропущен)")
                     continue
                 
-                # Копируем файл
-                shutil.copy2(img_path, output_file)
-                processed += 1
+                # Определяем формат файла
+                ext = img_path.suffix.lower()
+                
+                # Для JPEG/JPG применяем сжатие
+                if ext in ['.jpg', '.jpeg']:
+                    # Читаем изображение
+                    img = cv2.imread(str(img_path))
+                    if img is None:
+                        raise Exception("Не удалось прочитать изображение")
+                    
+                    # Сохраняем с указанным качеством
+                    cv2.imwrite(str(output_file), img, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
+                    processed += 1
+                    
+                else:
+                    # Для других форматов просто копируем
+                    shutil.copy2(img_path, output_file)
+                    processed += 1
                 
                 if progress_callback:
                     progress_callback(i + 1, total, img_path.name)
                     
             except Exception as e:
                 failed += 1
-                print(f"Ошибка копирования {img_path}: {e}")
+                print(f"Ошибка обработки {img_path}: {e}")
                 if progress_callback:
                     progress_callback(i + 1, total, f"{img_path.name} (ошибка: {e})")
         
