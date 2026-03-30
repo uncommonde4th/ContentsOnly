@@ -204,18 +204,24 @@ class DocumentScannerApp:
         ttk.Entry(main_frame, textvariable=self.process_output_var, width=50).grid(row=1, column=1, padx=5, pady=5)
         ttk.Button(main_frame, text="📁", command=self.browse_process_output, width=3).grid(row=1, column=2, pady=5)
         
+        # Новая галочка "Обрезать фотографии" (включена по умолчанию)
+        self.enable_cropping_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(main_frame, text="✂️ Обрезать фотографии (требуется калибровка)", 
+                       variable=self.enable_cropping_var,
+                       command=self.on_cropping_toggle).grid(row=2, column=0, columnspan=3, pady=5, sticky='w')
+        
         # Статус калибровки
         self.process_status_var = tk.StringVar(value="❌ Калибровка не выполнена")
-        ttk.Label(main_frame, textvariable=self.process_status_var, font=("Arial", 10)).grid(row=2, column=0, columnspan=3, pady=10)
+        ttk.Label(main_frame, textvariable=self.process_status_var, font=("Arial", 10)).grid(row=3, column=0, columnspan=3, pady=10)
         
         # Опция перезаписи файлов
         self.process_overwrite_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(main_frame, text="Перезаписывать существующие файлы", 
-                       variable=self.process_overwrite_var).grid(row=3, column=0, columnspan=3, pady=5, sticky='w')
+                       variable=self.process_overwrite_var).grid(row=4, column=0, columnspan=3, pady=5, sticky='w')
         
         # Опция сжатия изображений
         compression_frame = ttk.Frame(main_frame)
-        compression_frame.grid(row=4, column=0, columnspan=3, pady=5, sticky='w')
+        compression_frame.grid(row=5, column=0, columnspan=3, pady=5, sticky='w')
         ttk.Label(compression_frame, text="Сжатие JPEG:").grid(row=0, column=0, sticky='w')
         self.process_compression_var = tk.IntVar(value=85)  # По умолчанию 85 - хороший баланс
         compression_scale = ttk.Scale(compression_frame, from_=60, to=100, 
@@ -235,18 +241,28 @@ class DocumentScannerApp:
         update_compression_label()  # Инициализируем
         
         self.process_btn = ttk.Button(main_frame, text="🚀 НАЧАТЬ ОБРАБОТКУ", 
-                                    command=self.start_processing, state='disabled')
-        self.process_btn.grid(row=5, column=0, columnspan=3, pady=20)
+                                    command=self.start_processing)
+        self.process_btn.grid(row=6, column=0, columnspan=3, pady=20)
         
         # Прогресс-бар
         self.progress_var = tk.StringVar(value="")
-        ttk.Label(main_frame, textvariable=self.progress_var).grid(row=6, column=0, columnspan=3, pady=5)
+        ttk.Label(main_frame, textvariable=self.progress_var).grid(row=7, column=0, columnspan=3, pady=5)
         
         self.progress_bar = ttk.Progressbar(main_frame, mode='determinate')
-        self.progress_bar.grid(row=7, column=0, columnspan=3, sticky='ew', padx=20, pady=5)
+        self.progress_bar.grid(row=8, column=0, columnspan=3, sticky='ew', padx=20, pady=5)
         
         self.progress_filename_var = tk.StringVar(value="")
-        ttk.Label(main_frame, textvariable=self.progress_filename_var, font=("Arial", 9)).grid(row=8, column=0, columnspan=3, pady=2)
+        ttk.Label(main_frame, textvariable=self.progress_filename_var, font=("Arial", 9)).grid(row=9, column=0, columnspan=3, pady=2)
+    
+    def on_cropping_toggle(self):
+        """Обработчик переключения галочки 'Обрезать фотографии'"""
+        if self.enable_cropping_var.get():
+            # Если включили обрезку, проверяем калибровку
+            self.update_calibration_status()
+        else:
+            # Если выключили обрезку, кнопка всегда активна
+            self.process_btn.config(state='normal')
+            self.process_status_var.set("✅ Обрезка отключена (файлы будут скопированы без изменений)")
     
     def browse_calibration_folder(self):
         folder = filedialog.askdirectory(title="Выберите папку для калибровки")
@@ -392,25 +408,33 @@ class DocumentScannerApp:
     
     def update_calibration_status(self):
         """Обновляет статус калибровки"""
-        if self.calibration_manager.is_complete():
-            self.process_status_var.set("✅ Калибровка выполнена")
-            self.process_btn.config(state='normal')
+        if self.enable_cropping_var.get():
+            # Если обрезка включена, проверяем калибровку
+            if self.calibration_manager.is_complete():
+                self.process_status_var.set("✅ Калибровка выполнена")
+                self.process_btn.config(state='normal')
+            else:
+                self.process_status_var.set("❌ Калибровка не выполнена (отметьте 4 угла на калибровочных изображениях)")
+                self.process_btn.config(state='disabled')
         else:
-            self.process_status_var.set("❌ Калибровка не выполнена")
-            self.process_btn.config(state='disabled')
+            # Если обрезка отключена, кнопка всегда активна
+            self.process_status_var.set("✅ Обрезка отключена (файлы будут скопированы без изменений)")
+            self.process_btn.config(state='normal')
     
     def start_processing(self):
         """Запускает обработку изображений"""
-        if not self.calibration_manager.is_complete():
-            messagebox.showerror("Ошибка", "Сначала выполните калибровку!")
+        # Проверка только если обрезка включена
+        if self.enable_cropping_var.get() and not self.calibration_manager.is_complete():
+            messagebox.showerror("Ошибка", "Сначала выполните калибровку или отключите опцию 'Обрезать фотографии'!")
             return
         
         if not self.process_input_var.get():
             messagebox.showerror("Ошибка", "Выберите папку для обработки!")
             return
         
-        # Переключаем на вкладку обработки
-        # self.notebook.select(1)
+        if not self.process_output_var.get():
+            messagebox.showerror("Ошибка", "Выберите папку для результатов!")
+            return
         
         # Запускаем в отдельном потоке
         thread = threading.Thread(target=self.process_images)
@@ -434,24 +458,39 @@ class DocumentScannerApp:
                 self.progress_filename_var.set(f"Текущий файл: {filename}")
                 self.root.update_idletasks()  # Обновляем GUI
             
-            processor = CalibratedImageProcessor(self.processing_config, self.calibration_config)
-            stats = processor.process_folder(
-                self.process_input_var.get(), 
-                self.process_output_var.get(),
-                calibration_manager=self.calibration_manager,
-                progress_callback=update_progress,
-                overwrite=self.process_overwrite_var.get()
-            )
+            # Проверяем, нужно ли выполнять обрезку
+            if self.enable_cropping_var.get():
+                # Запускаем обрезку с калибровкой
+                processor = CalibratedImageProcessor(self.processing_config, self.calibration_config)
+                stats = processor.process_folder(
+                    self.process_input_var.get(), 
+                    self.process_output_var.get(),
+                    calibration_manager=self.calibration_manager,
+                    progress_callback=update_progress,
+                    overwrite=self.process_overwrite_var.get()
+                )
+                success_message = f"Обрезано: {stats['processed']} файлов\nОшибок: {stats['failed']}"
+                if stats.get('skipped', 0) > 0:
+                    success_message += f"\nПропущено: {stats['skipped']}"
+            else:
+                # Режим копирования без обрезки
+                stats = self.copy_images_without_cropping(
+                    self.process_input_var.get(),
+                    self.process_output_var.get(),
+                    update_progress,
+                    self.process_overwrite_var.get()
+                )
+                success_message = f"Скопировано: {stats['processed']} файлов\nОшибок: {stats['failed']}"
+                if stats.get('skipped', 0) > 0:
+                    success_message += f"\nПропущено: {stats['skipped']}"
             
             self.process_btn.config(state='normal')
             self.progress_var.set("")
             self.progress_bar['value'] = 100
             self.progress_filename_var.set("")
             
-            skipped_text = f"\nПропущено: {stats.get('skipped', 0)}" if stats.get('skipped', 0) > 0 else ""
             messagebox.showinfo("Готово!", 
-                              f"Обработано: {stats['processed']} файлов\n"
-                              f"Ошибок: {stats['failed']}{skipped_text}\n"
+                              f"{success_message}\n"
                               f"Папка с результатами:\n{self.process_output_var.get()}")
             
         except Exception as e:
@@ -460,6 +499,68 @@ class DocumentScannerApp:
             self.progress_bar['value'] = 0
             self.progress_filename_var.set("")
             messagebox.showerror("Ошибка", f"Ошибка обработки: {str(e)}")
+    
+    def copy_images_without_cropping(self, input_folder, output_folder, progress_callback=None, overwrite=False):
+        """
+        Копирует изображения без обрезки (простое копирование)
+        """
+        import shutil
+        
+        input_path = Path(input_folder)
+        output_path = Path(output_folder)
+        
+        # Создаем выходную папку
+        output_path.mkdir(parents=True, exist_ok=True)
+        
+        # Поддерживаемые форматы изображений
+        image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.webp'}
+        
+        # Получаем все изображения
+        image_files = []
+        for ext in image_extensions:
+            image_files.extend(input_path.glob(f'*{ext}'))
+            image_files.extend(input_path.glob(f'*{ext.upper()}'))
+        
+        # Сортируем для последовательной обработки
+        image_files = sorted(set(image_files))
+        
+        total = len(image_files)
+        processed = 0
+        failed = 0
+        skipped = 0
+        
+        for i, img_path in enumerate(image_files):
+            try:
+                # Нормализуем имя файла
+                filename = self._normalize_filename(img_path.name)
+                output_file = output_path / filename
+                
+                # Проверяем существование файла
+                if output_file.exists() and not overwrite:
+                    skipped += 1
+                    if progress_callback:
+                        progress_callback(i + 1, total, f"{img_path.name} (пропущен)")
+                    continue
+                
+                # Копируем файл
+                shutil.copy2(img_path, output_file)
+                processed += 1
+                
+                if progress_callback:
+                    progress_callback(i + 1, total, img_path.name)
+                    
+            except Exception as e:
+                failed += 1
+                print(f"Ошибка копирования {img_path}: {e}")
+                if progress_callback:
+                    progress_callback(i + 1, total, f"{img_path.name} (ошибка: {e})")
+        
+        return {
+            'processed': processed,
+            'failed': failed,
+            'skipped': skipped,
+            'total': total
+        }
     
     # Методы для ручной обрезки
     def load_manual_crop_images(self):
