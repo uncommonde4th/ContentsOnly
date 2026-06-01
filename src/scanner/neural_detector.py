@@ -37,7 +37,7 @@ class NeuralDocumentDetector:
         if model_path is None:
             # Ищем модель в стандартных местах
             possible_paths = [
-                Path("models/best.pt"),
+                Path("models/doc_detector.pt"),
                 Path("models/doc_detector.onnx"),
                 Path("../models/doc_detector.pt"),
                 Path("scanner/models/doc_detector.pt"),
