@@ -9,6 +9,9 @@ build_win/
 build_windows/
 build_venv/
 release/
+labeled_data/
+dataset/
+runs/
 *.exe
 *.tar.gz
 *.zip

@@ -1008,7 +1008,7 @@ class DocumentScannerApp:
             else:
                 fixed_name += char
         
-        return fixed_name
+        return corrupted_name
 
 def main():
     app = DocumentScannerApp()

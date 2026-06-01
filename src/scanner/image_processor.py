@@ -3,6 +3,8 @@ import numpy as np
 from pathlib import Path
 from typing import Optional, List, Tuple
 
+from scanner.neural_detector import NeuralDocumentDetector
+
 class ProcessingConfig:
     """Простая конфигурация обработки"""
     def __init__(self):
@@ -14,33 +16,158 @@ class CalibratedImageProcessor:
     def __init__(self, processing_config: ProcessingConfig, calibration_config):
         self.processing_config = processing_config
         self.calibration_config = calibration_config
+        self.neural_detector = NeuralDocumentDetector()
     
+    def _validate_points(self, points: np.ndarray, image_shape: Tuple[int, int]) -> Tuple[bool, str]:
+        """
+        Проверяет валидность предсказанных точек
+        Возвращает (валидность, причина невалидности)
+        """
+        h, w = image_shape[:2]
+        
+        # Проверка 1: Должно быть 4 точки
+        if len(points) != 4:
+            return False, f"Ожидалось 4 точки, получено {len(points)}"
+        
+        # Проверка 2: Точки не должны быть слишком близко
+        min_distance = min(h, w) * 0.05  # 5% от минимальной стороны
+        for i in range(4):
+            for j in range(i + 1, 4):
+                dist = np.linalg.norm(points[i] - points[j])
+                if dist < min_distance:
+                    return False, f"Точки {i+1} и {j+1} слишком близко ({dist:.0f}px < {min_distance:.0f}px)"
+        
+        # Проверка 3: Все точки должны быть в пределах изображения с небольшим запасом
+        margin = 50  # небольшой запас для точек на границе
+        for i, (x, y) in enumerate(points):
+            if x < -margin or x >= w + margin or y < -margin or y >= h + margin:
+                return False, f"Точка {i+1} за пределами изображения ({x:.0f}, {y:.0f})"
+        
+        # Проверка 4: Площадь контура должна быть разумной
+        area = cv2.contourArea(points.astype(np.float32))
+        image_area = w * h
+        area_ratio = area / image_area
+        
+        if area_ratio < 0.01:  # Меньше 1% изображения
+            return False, f"Слишком маленькая площадь ({area_ratio*100:.1f}% изображения)"
+        
+        if area_ratio > 0.95:  # Больше 95% изображения
+            return False, f"Слишком большая площадь ({area_ratio*100:.1f}% изображения)"
+        
+        # Все проверки пройдены
+        return True, "OK"
+
+    def _fix_duplicate_points(self, points: np.ndarray) -> np.ndarray:
+        """
+        Исправляет дублирующиеся точки (когда модель предсказывает 3 уникальные точки)
+        """
+        # Проверяем на дубликаты
+        unique_points = []
+        for point in points:
+            is_duplicate = False
+            for unique_point in unique_points:
+                if np.linalg.norm(point - unique_point) < 10:  # расстояние меньше 10 пикселей
+                    is_duplicate = True
+                    break
+            if not is_duplicate:
+                unique_points.append(point)
+        
+        # Если есть дубликаты, пробуем их исправить
+        if len(unique_points) == 3:
+            print(f"      ⚠️ Обнаружено дублирование точек, исправляем...")
+            
+            # Сортируем уникальные точки по углу от центра
+            center = np.mean(unique_points, axis=0)
+            angles = np.arctan2(
+                [p[1] - center[1] for p in unique_points],
+                [p[0] - center[0] for p in unique_points]
+            )
+            sorted_idx = np.argsort(angles)
+            sorted_points = [unique_points[i] for i in sorted_idx]
+            
+            # Создаём 4 точки, вставляя среднюю точку между соседними
+            fixed_points = []
+            for i in range(3):
+                fixed_points.append(sorted_points[i])
+                # Добавляем среднюю точку между i и i+1
+                next_point = sorted_points[(i + 1) % 3]
+                mid_point = (sorted_points[i] + next_point) / 2
+                fixed_points.append(mid_point)
+            
+            return np.array(fixed_points[:4])
+        
+        return points
+
     def find_document_auto(self, image: np.ndarray) -> Optional[np.ndarray]:
-        """Автоматически находит документ на изображении используя параметры калибровки"""
-        if not self.calibration_config.calibrated:
-            return None
+        """
+        Автоматически находит документ на изображении
+        Сначала пробует нейросеть, затем эвристические методы
+        """
         
-        print("🔍 Поиск документа с параметрами калибровки...")
+        # ========== ШАГ 1: НЕЙРОСЕТЬ ==========
+        if self.neural_detector.is_available:
+            print("🧠 Пробуем нейросеть...")
+            
+            # Логируем информацию об изображении
+            h, w = image.shape[:2]
+            print(f"   Размер изображения: {w}x{h}")
+            print(f"   Соотношение сторон: {w/h:.2f}")
+            
+            # Пробуем нейросеть с разными порогами уверенности
+            for conf in [0.7, 0.5, 0.3, 0.2, 0.1]:
+                print(f"   Пробуем порог уверенности: {conf}")
+                
+                points = self.neural_detector.detect_document(image, conf_threshold=conf)
+                
+                if points is None:
+                    print(f"      ❌ Нет предсказаний (уверенность ниже {conf})")
+                    continue
+                
+                print(f"      ✅ Получены точки: {points}")
+                
+                # Исправляем дубликаты
+                points = self._fix_duplicate_points(points)
+                
+                # Проверяем валидность точек
+                is_valid, reason = self._validate_points(points, image.shape)
+                
+                if is_valid:
+                    contour = points.reshape(-1, 1, 2)
+                    print(f"   ✅ Документ найден нейросетью (уверенность: {conf})")
+                    print(f"   📍 Точки: {points.tolist()}")
+                    return contour
+                else:
+                    print(f"      ⚠️ Точки невалидны: {reason}")
+                    print(f"      📍 Полученные точки: {points.tolist()}")
+                    continue
+            
+            print("   ❌ Нейросеть не смогла найти валидный документ ни с одним порогом")
+        else:
+            print("⚠️ Нейросеть недоступна (модель не загружена)")
+            print("   Проверьте наличие файла models/doc_detector.pt")
         
-        # Метод 0: Специальный метод для светлых документов на темном фоне (самый простой и надежный)
+        # ========== ШАГ 2: ЭВРИСТИЧЕСКИЕ МЕТОДЫ (FALLBACK) ==========
+        print("⚠️ Переключаемся на эвристические методы...")
+        
+        # Метод 0: Специальный метод для светлых документов на темном фоне
         contour = self._find_light_on_dark(image)
         if contour is not None:
             print("✅ Найден как светлый документ на темном фоне")
             return contour
         
-        # Метод 0.5: Поиск краев документа (не текста, а именно краев бумаги)
+        # Метод 0.5: Поиск краев документа
         contour = self._find_document_edges(image)
         if contour is not None:
             print("✅ Найден по краям документа")
             return contour
         
-        # Метод 1: Поиск по краям (самый надежный)
+        # Метод 1: Поиск по краям
         contour = self._find_by_edges(image)
         if contour is not None:
             print("✅ Найден по краям")
             return contour
         
-        # Метод 2: Поиск по цвету (LAB цветовое пространство)
+        # Метод 2: Поиск по цвету
         contour = self._find_by_color(image)
         if contour is not None:
             print("✅ Найден по цвету")
@@ -52,15 +179,15 @@ class CalibratedImageProcessor:
             print("✅ Найден по текстуре")
             return contour
         
-        # Метод 4: Попытка с ослабленными ограничениями
-        print("⚠️  Попытка с ослабленными ограничениями...")
+        # Метод 4: Ослабленные ограничения
+        print("⚠️ Попытка с ослабленными ограничениями...")
         contour = self._find_with_relaxed_constraints(image)
         if contour is not None:
             print("✅ Найден с ослабленными ограничениями")
             return contour
         
-        # Метод 5: Поиск любого большого прямоугольного контура
-        print("⚠️  Поиск любого большого прямоугольного контура...")
+        # Метод 5: Любой большой прямоугольник
+        print("⚠️ Поиск любого большого прямоугольного контура...")
         contour = self._find_any_large_rectangle(image)
         if contour is not None:
             print("✅ Найден большой прямоугольный контур")
@@ -1124,16 +1251,8 @@ class CalibratedImageProcessor:
             original_filename = image_file.name
             print(f"Оригинальное имя файла: {original_filename}")
             
-            # Декодируем испорченное имя
-            decoded_filename = self._decode_corrupted_filename(original_filename)
-            print(f"После декодирования: {decoded_filename}")
-            
-            # Нормализуем расширение
-            normalized_name = self._normalize_extension(decoded_filename)
-            print(f"После нормализации расширения: {normalized_name}")
-            
             # Нормализуем имя файла
-            final_filename = self._normalize_filename(normalized_name)
+            final_filename = original_filename
             print(f"Финальное имя: {final_filename}")
             
             output_file = output_path / final_filename
@@ -1231,7 +1350,7 @@ class CalibratedImageProcessor:
         
         result = normalized_name + original_ext
         print(f"После нормализации имени: '{result}'")
-        return result
+        return filename
 
     def _normalize_extension(self, filename):
         """
@@ -1323,6 +1442,7 @@ class CalibratedImageProcessor:
         Специальная функция для исправления двойной перекодировки
         Пример: 'РГАДА' -> 'ÉâÇäÇ'
         """
+        
         mapping = {
             # Заглавные русские буквы
             'É': 'Р', 'â': 'Г', 'Ç': 'А', 'ä': 'Д', 
@@ -1346,5 +1466,5 @@ class CalibratedImageProcessor:
             else:
                 fixed_name += char
         
-        return fixed_name
+        return corrupted_name
 
